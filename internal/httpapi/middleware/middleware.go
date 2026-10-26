@@ -147,9 +147,12 @@ func (m *Middleware) InstallGuard(next http.Handler) http.Handler {
 			return
 		}
 		p := r.URL.Path
-		if strings.HasPrefix(p, "/api/install") || strings.HasPrefix(p, "/health") ||
-			strings.HasPrefix(p, "/assets/") || p == "/install" || p == "/favicon.svg" ||
-			strings.HasPrefix(p, "/fonts/") || p == "/og.png" || strings.HasPrefix(p, "/static/") {
+		// 页面请求一律交给前端：SPA 会自行检测安装状态并跳到 /install。
+		// 否则用户直接打开域名根路径只能看到一段 JSON，体验很差。
+		if !strings.HasPrefix(p, "/api/") ||
+			strings.HasPrefix(p, "/api/install") ||
+			p == "/api/site" || // 登录/安装页都要读站点名与 Logo
+			strings.HasPrefix(p, "/health") {
 			next.ServeHTTP(w, r)
 			return
 		}
