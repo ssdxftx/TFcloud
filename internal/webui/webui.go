@@ -1,6 +1,9 @@
 package webui
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"io/fs"
 	"mime"
 	"net/http"
@@ -9,6 +12,36 @@ import (
 	"path/filepath"
 	"strings"
 )
+
+const (
+	// Vite 产物文件名带内容哈希，可以放心让浏览器和 CDN 长期缓存。
+	immutableCacheControl = "public, max-age=31536000, s-maxage=31536000, immutable"
+	immutableCDNCache     = "public, max-age=31536000, immutable"
+	immutableSurrogate    = "max-age=31536000"
+
+	// 根目录静态文件没有内容哈希，浏览器短缓存，CDN 长缓存并允许后台刷新。
+	staticCacheControl = "public, max-age=3600, s-maxage=86400, stale-while-revalidate=86400, stale-if-error=604800"
+	staticCDNCache     = "public, max-age=86400, stale-while-revalidate=604800, stale-if-error=604800"
+	staticSurrogate    = "max-age=86400"
+
+	// index.html 必须每次回源校验；CDN 不缓存 HTML，避免发布后仍命中旧入口。
+	htmlCacheControl = "no-cache"
+	htmlCDNCache     = "no-store"
+)
+
+func setCacheHeaders(w http.ResponseWriter, cacheControl, cdnCacheControl, surrogateControl string) {
+	h := w.Header()
+	h.Set("Cache-Control", cacheControl)
+	h.Set("CDN-Cache-Control", cdnCacheControl)
+	if surrogateControl != "" {
+		h.Set("Surrogate-Control", surrogateControl)
+	}
+}
+
+func setETag(w http.ResponseWriter, data []byte) {
+	sum := sha256.Sum256(data)
+	w.Header().Set("ETag", `"`+hex.EncodeToString(sum[:])+`"`)
+}
 
 // Handler 返回前端静态资源处理器：命中文件直接返回，未命中回退到 index.html（SPA）。
 //
@@ -54,7 +87,7 @@ func (placeholderHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache")
+	setCacheHeaders(w, htmlCacheControl, htmlCDNCache, "")
 	_, _ = w.Write([]byte(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <title>天方云签</title><style>body{font:14px/1.7 system-ui,sans-serif;max-width:640px;margin:12vh auto;padding:0 24px;color:#333}
 code{background:#f4f4f5;padding:2px 6px;border-radius:4px}</style></head><body>
@@ -97,14 +130,20 @@ func (h *spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *spaHandler) serveIndex(w http.ResponseWriter, r *http.Request) {
+	info, err := fs.Stat(h.root, "index.html")
+	if err != nil {
+		http.Error(w, "前端资源缺失", http.StatusNotFound)
+		return
+	}
 	data, err := fs.ReadFile(h.root, "index.html")
 	if err != nil {
 		http.Error(w, "前端资源缺失", http.StatusNotFound)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache")
-	_, _ = w.Write(data)
+	setCacheHeaders(w, htmlCacheControl, htmlCDNCache, "")
+	setETag(w, data)
+	http.ServeContent(w, r, "index.html", info.ModTime(), bytes.NewReader(data))
 }
 
 func (h *spaHandler) serveFile(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo) {
@@ -113,13 +152,15 @@ func (h *spaHandler) serveFile(w http.ResponseWriter, r *http.Request, name stri
 		http.NotFound(w, r)
 		return
 	}
-	if ct := mime.TypeByExtension(filepath.Ext(name)); ct != "" {
+	ext := strings.ToLower(filepath.Ext(name))
+	if ct := mime.TypeByExtension(ext); ct != "" {
 		w.Header().Set("Content-Type", ct)
 	}
+	setETag(w, data)
 	if strings.HasPrefix(name, "assets/") || strings.HasPrefix(name, "fonts/") {
-		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		setCacheHeaders(w, immutableCacheControl, immutableCDNCache, immutableSurrogate)
 	} else {
-		w.Header().Set("Cache-Control", "public, max-age=3600")
+		setCacheHeaders(w, staticCacheControl, staticCDNCache, staticSurrogate)
 	}
-	http.ServeContent(w, r, name, info.ModTime(), strings.NewReader(string(data)))
+	http.ServeContent(w, r, name, info.ModTime(), bytes.NewReader(data))
 }
