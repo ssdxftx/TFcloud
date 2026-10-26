@@ -1,0 +1,237 @@
+name: 构建镜像
+
+# 触发策略：
+#   - 推到 main/master：跑测试 + 构建并推送 latest
+#   - 打 v* 标签：跑测试 + 构建并推送语义化版本标签
+#   - PR：只跑测试与构建验证，不登录、不推送
+#   - 手动：可指定是否推送
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+    branches: [main, master]
+  # 每周一凌晨重建一次，顺带吃掉 alpine / golang 基础镜像的安全更新
+  schedule:
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      push_image:
+        description: 是否推送镜像到镜像仓库
+        type: boolean
+        default: true
+
+concurrency:
+  group: image-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  # goproxy 走可配置项：GitHub 托管 runner 用官方源，国内自建 runner 可改成 goproxy.cn
+  GOPROXY: ${{ vars.GO_PROXY || 'https://proxy.golang.org,direct' }}
+  GOFLAGS: -mod=readonly
+
+jobs:
+  # ---------------------------------------------------------------- 测试
+  test:
+    name: 测试（Go + 前端类型）
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 静态检查
+        run: go vet ./...
+
+      - name: 单元测试
+        run: go test ./... -count=1
+
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: ui/package.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+
+      - name: 安装前端依赖
+        working-directory: ui
+        run: pnpm install --frozen-lockfile
+
+      - name: 检查前端类型
+        working-directory: ui
+        run: pnpm typecheck
+
+  # ---------------------------------------------------------------- 构建并推送
+  build:
+    name: 构建多架构镜像
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      tags: ${{ steps.meta.outputs.tags }}
+      version: ${{ steps.meta.outputs.version }}
+      pushed: ${{ steps.flags.outputs.push }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 解析推送目标
+        id: flags
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          EVENT: ${{ github.event_name }}
+          DISPATCH_PUSH: ${{ inputs.push_image }}
+        run: |
+          set -euo pipefail
+          # PR 一律不推送；手动触发看输入；其余事件推送
+          if [ "$EVENT" = "pull_request" ]; then
+            push=false
+          elif [ "$EVENT" = "workflow_dispatch" ] && [ "$DISPATCH_PUSH" != "true" ]; then
+            push=false
+          else
+            push=true
+          fi
+          images="ghcr.io/${GITHUB_REPOSITORY,,}"
+          has_dockerhub=false
+          if [ -n "${DOCKERHUB_USERNAME}" ]; then
+            images="${images}"$'\n'"${DOCKERHUB_USERNAME}/tfcloud"
+            has_dockerhub=true
+          fi
+          {
+            echo "push=${push}"
+            echo "has_dockerhub=${has_dockerhub}"
+            echo "images<<EOF"
+            echo "${images}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "推送=${push}，目标："; echo "${images}"
+
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 登录 GHCR
+        if: steps.flags.outputs.push == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 登录 Docker Hub
+        if: steps.flags.outputs.push == 'true' && steps.flags.outputs.has_dockerhub == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 生成标签与元数据
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.flags.outputs.images }}
+          tags: |
+            type=ref,event=branch
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=short,prefix=sha-
+          labels: |
+            org.opencontainers.image.title=天方云签 TFcloud
+            org.opencontainers.image.description=多平台自动签到系统（Go + 内嵌 SQLite）
+            org.opencontainers.image.licenses=AGPL-3.0-or-later
+
+      - name: 构建并推送
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ steps.flags.outputs.push == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            GOPROXY=${{ env.GOPROXY }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+      - name: 汇总
+        run: |
+          {
+            echo "### 镜像构建完成"
+            echo ""
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+            echo ""
+            echo "推送：${{ steps.flags.outputs.push }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------- 冒烟
+  # 真正把镜像跑起来，确认能启动、能通过就绪探针、能建库
+  smoke:
+    name: 镜像冒烟测试
+    needs: build
+    if: needs.build.outputs.pushed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: 登录 GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 拉取 amd64 镜像
+        run: |
+          IMAGE="$(echo "${{ needs.build.outputs.tags }}" | head -n1)"
+          echo "IMAGE=${IMAGE}" >> "$GITHUB_ENV"
+          docker pull --platform linux/amd64 "${IMAGE}"
+
+      - name: 启动并探测
+        run: |
+          docker run -d --name smoke -p 18787:8787 "${IMAGE}"
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18787/health/ready > /tmp/ready.json 2>/dev/null; then
+              echo "就绪：$(cat /tmp/ready.json)"
+              break
+            fi
+            sleep 2
+          done
+          if ! grep -q '"status":"ready"' /tmp/ready.json 2>/dev/null; then
+            echo "::error::容器未在 60 秒内就绪"
+            docker logs smoke
+            exit 1
+          fi
+
+      - name: 校验首页与接口
+        run: |
+          curl -fsS http://127.0.0.1:18787/ | grep -qi '<div id="root">'
+          curl -fsS http://127.0.0.1:18787/api/install/status | grep -q '"installed":false'
+          curl -fsS http://127.0.0.1:18787/api/site | grep -q '"code":"SUCCESS"'
+          echo "首页、安装状态、站点接口均正常"
+
+      - name: 清理
+        if: always()
+        run: |
+          docker logs smoke > /tmp/smoke.log 2>&1 || true
+          docker rm -f smoke || true
+          tail -n 30 /tmp/smoke.log || true

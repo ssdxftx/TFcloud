@@ -1,0 +1,15 @@
+天方云签 · TFcloud（Go 重构版）
+Copyright (C) 龙辉（longfie）<https://www.yunsign.net/>
+
+本程序是 longfie/TFcloud 的衍生作品，依据 GNU Affero General Public License v3.0 发布。
+原始项目：https://github.com/longfie/TFcloud
+
+后端由 PHP 8.4 + Webman + MySQL 重写为 Go + 内嵌 SQLite；
+前端 React 界面来自原项目，遵循同一许可。
+
+插件协议的第三方来源：
+- Zepp Life（mimotion, TonyJiangWJ）见 internal/plugins/sport.go 注释
+- 天翼云盘（cloud189-sdk, wes-lin）
+- 哔咔漫画（picacomic-api, LGPL-3.0）
+
+按 AGPL-3.0 第 13 条，通过网络使用本程序的用户有权获取对应源码。

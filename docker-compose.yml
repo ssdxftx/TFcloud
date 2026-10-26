@@ -1,0 +1,27 @@
+services:
+  tfcloud:
+    build: .
+    image: tfcloud:latest
+    container_name: tfcloud
+    restart: unless-stopped
+    ports:
+      - "${TFCLOUD_PORT:-8787}:8787"
+    environment:
+      TZ: Asia/Shanghai
+      TF_DATA_DIR: /data
+      HTTP_ADDR: ":8787"
+      SIGN_WORKER_COUNT: "${SIGN_WORKER_COUNT:-2}"
+      BILIBILI_LIVE_WORKER_COUNT: "${BILIBILI_LIVE_WORKER_COUNT:-2}"
+    volumes:
+      - ./data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8787/health/ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

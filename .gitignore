@@ -1,0 +1,19 @@
+# 运行时数据
+data/
+*.db
+*.db-shm
+*.db-wal
+.env
+tmp/
+
+# 构建产物
+/tfcloud
+/dist
+internal/webui/dist/
+ui/node_modules/
+ui/dist/
+
+# 编辑器
+.idea/
+.vscode/
+.DS_Store
