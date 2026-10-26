@@ -136,7 +136,7 @@ export default function HomePage () {
           <motion.nav
             initial={{ opacity: 0, y: -8 }}
             animate={{ opacity: 1, y: 0 }}
-            className='mx-4 flex flex-col gap-1 rounded-2xl border border-white/15 bg-black/55 p-2 shadow-2xl backdrop-blur-xl lg:hidden'
+            className='mx-4 flex flex-col gap-1 rounded-2xl border border-white/15 bg-black/85 p-2 shadow-2xl lg:hidden'
             aria-label='移动端首页导航'
           >
             {[
@@ -181,7 +181,7 @@ export default function HomePage () {
             </p>
 
             {site.home_announcement?.trim() && (
-              <div className='mx-auto mt-6 flex max-w-xl items-start justify-center gap-2 rounded-full border border-white/20 bg-black/15 px-5 py-2.5 text-sm text-white/85 backdrop-blur-md'>
+              <div className='mx-auto mt-6 flex max-w-xl items-start justify-center gap-2 rounded-full border border-white/20 bg-black/35 px-5 py-2.5 text-sm text-white/85'>
                 <LuBellRing className='mt-0.5 shrink-0' />
                 <span className='line-clamp-1'>{site.home_announcement}</span>
               </div>

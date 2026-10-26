@@ -101,7 +101,7 @@ export default function SignLayout () {
             end={item.href === '/TFYT'}
             onClick={() => setMobileOpen(false)}
             className={({ isActive }) => clsx(
-              'group relative flex items-center gap-3 overflow-hidden rounded-2xl px-3 py-3 text-sm font-medium transition-all duration-200',
+              'group relative flex items-center gap-3 overflow-hidden rounded-2xl px-3 py-3 text-sm font-medium transition-colors duration-200',
               isActive
                 ? 'bg-gradient-to-r from-primary to-secondary text-white shadow-lg shadow-primary/20'
                 : 'text-default-600 hover:bg-white/60 hover:text-foreground dark:hover:bg-white/[0.06]'
@@ -123,7 +123,7 @@ export default function SignLayout () {
       <AnimatePresence>
         {mobileOpen && (
           <motion.div className='fixed inset-0 z-50 lg:hidden' initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-            <button aria-label='关闭导航' className='absolute inset-0 bg-slate-950/45 backdrop-blur-sm' onClick={() => setMobileOpen(false)} />
+            <button aria-label='关闭导航' className='absolute inset-0 bg-slate-950/45' onClick={() => setMobileOpen(false)} />
             <motion.aside
               initial={{ x: -320, opacity: 0.6 }}
               animate={{ x: 0, opacity: 1 }}
@@ -159,9 +159,9 @@ export default function SignLayout () {
                     <Avatar size='sm' src={userAvatar} name={user?.username || 'U'} className='h-8 w-8 shrink-0' />
                     <span
                       aria-hidden
-                      className={`absolute -inset-1 rounded-full transition-opacity duration-150 [backface-visibility:hidden] [contain:paint] [transform:translateZ(0)] ${pageLoading ? 'opacity-100' : 'opacity-0'}`}
+                      className={`absolute -inset-1 rounded-full transition-opacity duration-150 ${pageLoading ? 'opacity-100' : 'opacity-0'}`}
                     >
-                      <span className={`absolute inset-0 origin-center rounded-full border-2 border-primary/20 border-t-primary [backface-visibility:hidden] [will-change:transform] motion-reduce:animate-pulse ${pageLoading ? 'animate-spin' : ''}`} />
+                      <span className={`absolute inset-0 origin-center rounded-full border-2 border-primary/20 border-t-primary motion-reduce:animate-pulse ${pageLoading ? 'animate-spin' : ''}`} />
                     </span>
                   </span>
                   <span className='hidden max-w-28 truncate text-sm sm:block'>{user?.username}</span>

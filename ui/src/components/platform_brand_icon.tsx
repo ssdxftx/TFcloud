@@ -48,7 +48,9 @@ export default function PlatformBrandIcon({
           src={source}
           alt={usingAccountAvatar ? `${name || code} 头像` : `${name || code} Logo`}
           className="h-full w-full object-cover"
+          decoding="async"
           draggable={false}
+          loading="lazy"
           referrerPolicy="no-referrer"
           onError={(event) => {
             if (!usingAccountAvatar) return;

@@ -240,7 +240,7 @@ export default function ProfilePage () {
             </div>
             <div className='grid grid-cols-2 gap-2 md:grid-cols-4'>
               {facts.map((fact) => (
-                <div key={fact.label} className='min-w-28 rounded-2xl border border-white/50 bg-background/55 p-3 backdrop-blur'>
+                <div key={fact.label} className='min-w-28 rounded-2xl border border-white/50 bg-background/75 p-3'>
                   <div className='flex items-center gap-1.5 text-xs text-default-400'>{fact.icon}{fact.label}</div>
                   <p className='mt-1 whitespace-nowrap text-sm font-medium'>{fact.value}</p>
                 </div>

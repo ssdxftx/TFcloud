@@ -8,7 +8,6 @@ import { LuArrowRight, LuCircleCheck, LuCircleCheckBig, LuCircleUserRound, LuClo
 import { useNavigate } from 'react-router-dom';
 
 import { apiRequest } from '@/api/client';
-import HoverEffectCard from '@/components/effect_card';
 import PlatformBrandIcon from '@/components/platform_brand_icon';
 import SignCalendarCard from '@/components/sign/sign_calendar';
 import StatusChip from '@/components/sign/status_chip';
@@ -63,9 +62,8 @@ export default function DashboardPage () {
         className='relative isolate overflow-hidden rounded-[30px] bg-gradient-to-br from-indigo-600 via-primary-500 to-fuchsia-500 p-6 text-white shadow-[0_28px_70px_rgba(79,70,229,0.25)] md:p-9'
       >
         <div className='absolute -right-14 -top-24 -z-10 h-72 w-72 rounded-full border-[42px] border-white/10' />
-        <div className='absolute -bottom-24 right-[24%] -z-10 h-56 w-56 rounded-full bg-white/10 blur-2xl' />
         <div className='absolute inset-0 -z-10 bg-[radial-gradient(circle_at_25%_0%,rgba(255,255,255,0.22),transparent_34%)]' />
-        <p className='mb-2 inline-flex rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs text-white/85 backdrop-blur-md'>欢迎回来 · 系统已持续运行 {site.running_days ?? 1} 天</p>
+        <p className='mb-2 inline-flex rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs text-white/85'>欢迎回来 · 系统已持续运行 {site.running_days ?? 1} 天</p>
         <h2 className='mt-1 !text-white text-2xl font-semibold md:text-4xl'>{user?.username}</h2>
         <p className='mt-3 max-w-2xl text-sm leading-6 text-white/80'>平台账号会按照自动计划或你设置的定时计划执行签到，登录状态失效时会停止执行并及时提示。</p>
         <Button className='tf-soft-button mt-6 bg-white font-medium text-primary' endContent={<LuArrowRight />} onPress={() => navigate('/TFYT/accounts')}>
@@ -108,21 +106,14 @@ export default function DashboardPage () {
       )}
 
       <section className='grid grid-cols-2 gap-3 lg:grid-cols-4'>
-        {stats.map((item, index) => (
-          <motion.div
-            key={item.label}
-            initial={{ opacity: 0, y: 14 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.06 + index * 0.045, duration: 0.34 }}
-          >
-          <HoverEffectCard className='tf-glass-card h-full' maxXRotation={2.2} maxYRotation={2.2} lightStyle={{ width: 180, height: 180 }}>
+        {stats.map((item) => (
+          <Card key={item.label} className='tf-glass-card h-full'>
             <CardBody className='gap-3 p-4 md:p-5'>
               <div className={`flex h-11 w-11 items-center justify-center rounded-2xl text-xl shadow-inner ${item.color}`}>{item.icon}</div>
               <div><p className='text-2xl font-semibold tracking-tight md:text-3xl'>{item.value}</p><p className='text-sm text-default-500'>{item.label}</p></div>
               <p className='text-xs text-default-400'>{item.hint}</p>
             </CardBody>
-          </HoverEffectCard>
-          </motion.div>
+          </Card>
         ))}
       </section>
 
@@ -135,7 +126,7 @@ export default function DashboardPage () {
           <CardBody className='gap-1 px-3 pb-4'>
             {tasks.length === 0 && <p className='py-12 text-center text-sm text-default-400'>还没有签到任务</p>}
             {tasks.slice(0, 7).map((task) => (
-              <button key={task.task_no} className='group flex items-center gap-3 rounded-xl px-3 py-2 text-left transition-all duration-200 hover:translate-x-1 hover:bg-white/60 dark:hover:bg-white/[0.045]' onClick={() => navigate(`/TFYT/tasks/${task.task_no}`)}>
+              <button key={task.task_no} className='group flex items-center gap-3 rounded-xl px-3 py-2 text-left transition-colors duration-200 hover:bg-white/60 dark:hover:bg-white/[0.045]' onClick={() => navigate(`/TFYT/tasks/${task.task_no}`)}>
                 <div className='min-w-0 flex-1'>
                   <p className='truncate text-sm font-medium'>{pluginNames[task.plugin_code] || task.plugin_code} · {actionNames[task.action] || task.action}</p>
                   <p className='mt-0.5 truncate text-xs text-default-400'>{shortTaskNo(task.task_no)} · {formatDateTime(task.created_at)}</p>

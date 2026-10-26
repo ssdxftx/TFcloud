@@ -23,7 +23,7 @@ import { errorMessage } from '@/utils/sign';
 const inputClassNames = {
   input: 'bg-transparent text-black/90 dark:text-white/90',
   innerWrapper: 'bg-transparent',
-  inputWrapper: 'bg-default-100/70 shadow-lg backdrop-blur-xl dark:bg-default/60',
+  inputWrapper: 'bg-default-100/70 shadow-lg dark:bg-default/60',
 };
 
 export default function WebRegisterPage () {

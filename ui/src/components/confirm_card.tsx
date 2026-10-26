@@ -69,8 +69,8 @@ export function ConfirmCardHost () {
   return (
     <Modal
       hideCloseButton
-      backdrop='blur'
-      classNames={{ backdrop: 'z-[99] backdrop-blur-sm', wrapper: 'z-[99]', base: 'max-w-[21rem] rounded-[26px]' }}
+      backdrop='opaque'
+      classNames={{ backdrop: 'z-[99]', wrapper: 'z-[99]', base: 'max-w-[21rem] rounded-[26px]' }}
       isOpen={Boolean(current) && open}
       placement='center'
       onClose={() => settle(false)}

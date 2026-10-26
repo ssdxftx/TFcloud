@@ -33,8 +33,6 @@ const inputClassNames = {
     'shadow-xl',
     'bg-default-100/70',
     'dark:bg-default/60',
-    'backdrop-blur-xl',
-    'backdrop-saturate-200',
     'hover:bg-default-0/70',
     'dark:hover:bg-default/70',
     'group-data-[focus=true]:bg-default-100/50',
@@ -180,11 +178,7 @@ export default function WebLoginPage () {
     <>
       <title>登录 - {site.name || '天方云签'}</title>
       <div className='relative isolate min-h-screen overflow-hidden'>
-        <div className='pointer-events-none fixed inset-0 -z-10 h-full w-full overflow-hidden bg-gradient-to-br from-indigo-50 via-white to-pink-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900'>
-          <div className='absolute left-[-10%] top-[-10%] h-[500px] w-[500px] rounded-full bg-primary-200/40 blur-[100px]' />
-          <div className='absolute right-[-10%] top-[20%] h-[400px] w-[400px] rounded-full bg-secondary-200/40 blur-[90px]' />
-          <div className='absolute bottom-[-10%] left-[20%] h-[600px] w-[600px] rounded-full bg-pink-200/30 blur-[110px]' />
-        </div>
+        <div className='tf-auth-bg pointer-events-none fixed inset-0 -z-10' />
         <PureLayout>
           <motion.div
             initial={{ opacity: 0, y: 20, scale: 0.95 }}

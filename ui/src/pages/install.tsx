@@ -48,8 +48,6 @@ const inputClassNames = {
     'shadow-xl',
     'bg-default-100/70',
     'dark:bg-default/60',
-    'backdrop-blur-xl',
-    'backdrop-saturate-200',
     'hover:bg-default-0/70',
     'dark:hover:bg-default/70',
     'group-data-[focus=true]:bg-default-100/50',
@@ -201,23 +199,7 @@ export default function InstallPage () {
     <>
       <title>立即安装 - 天方云签</title>
       <div className='relative isolate min-h-screen'>
-        <div className='pointer-events-none fixed inset-0 -z-10 overflow-hidden bg-gradient-to-br from-rose-50 via-white to-indigo-50 dark:from-gray-950 dark:via-gray-900 dark:to-slate-950'>
-          <motion.div
-            className='absolute left-[-12%] top-[-14%] h-[520px] w-[520px] rounded-full bg-danger-300/30 blur-[110px] dark:bg-danger-500/20'
-            animate={{ scale: [1, 1.08, 1], opacity: [0.45, 0.7, 0.45] }}
-            transition={{ duration: 7, repeat: Infinity, ease: 'easeInOut' }}
-          />
-          <motion.div
-            className='absolute right-[-10%] top-[18%] h-[420px] w-[420px] rounded-full bg-secondary-300/35 blur-[100px] dark:bg-secondary-500/20'
-            animate={{ scale: [1.05, 0.95, 1.05], opacity: [0.4, 0.65, 0.4] }}
-            transition={{ duration: 8, repeat: Infinity, ease: 'easeInOut' }}
-          />
-          <motion.div
-            className='absolute bottom-[-12%] left-[18%] h-[560px] w-[560px] rounded-full bg-primary-200/35 blur-[120px] dark:bg-primary-500/15'
-            animate={{ y: [0, -18, 0] }}
-            transition={{ duration: 9, repeat: Infinity, ease: 'easeInOut' }}
-          />
-        </div>
+        <div className='tf-auth-bg pointer-events-none fixed inset-0 -z-10' />
 
         <PureLayout>
           <motion.div
@@ -228,7 +210,6 @@ export default function InstallPage () {
           >
             <HoverEffectCard className='items-stretch gap-0 overflow-hidden bg-default-50/95 pb-0 pt-0 shadow-2xl shadow-danger-500/10' maxXRotation={2} maxYRotation={2}>
               <div className='relative overflow-hidden border-b border-danger-200/60 bg-gradient-to-r from-danger-500 via-warning-500 to-secondary-500 px-5 py-3 text-white dark:border-danger-500/30'>
-                <div className='absolute inset-0 bg-[linear-gradient(110deg,transparent,rgba(255,255,255,0.18),transparent)] bg-[length:200%_100%] animate-[shine_3.5s_linear_infinite]' />
                 <div className='relative flex flex-wrap items-center justify-between gap-2 text-sm font-medium'>
                   <span className='inline-flex items-center gap-2'>
                     <motion.span
@@ -238,7 +219,7 @@ export default function InstallPage () {
                     />
                     系统尚未就绪 · 签到服务停在起点
                   </span>
-                  <span className='inline-flex items-center gap-1.5 rounded-full bg-white/15 px-2.5 py-0.5 text-xs backdrop-blur'>
+                  <span className='inline-flex items-center gap-1.5 rounded-full bg-white/15 px-2.5 py-0.5 text-xs'>
                     <LuClock3 />
                     {step === 'done' ? '即将上线' : `还差 ${remaining} 步启动`}
                   </span>
@@ -249,11 +230,7 @@ export default function InstallPage () {
                 <ThemeSwitch className='absolute right-4 top-4' />
                 <div className='flex flex-col items-center gap-4'>
                   <div className='relative'>
-                    <motion.div
-                      className='absolute -inset-3 rounded-[2rem] bg-gradient-to-br from-danger-400/30 via-secondary-400/20 to-primary-400/30 blur-md'
-                      animate={{ opacity: [0.35, 0.75, 0.35], rotate: [0, 4, 0] }}
-                      transition={{ duration: 4.5, repeat: Infinity, ease: 'easeInOut' }}
-                    />
+                    <div className='absolute -inset-3 rounded-[2rem] bg-gradient-to-br from-danger-400/20 via-secondary-400/15 to-primary-400/20' />
                     <div className='relative rounded-[1.75rem] bg-white/80 p-2 shadow-lg ring-1 ring-white/60 dark:bg-default/40 dark:ring-white/10'>
                       <PlatformLogo size='4.5em' />
                     </div>
@@ -307,7 +284,7 @@ export default function InstallPage () {
                     return (
                       <div
                         key={item.key}
-                        className={`relative rounded-2xl border px-2 py-3 text-center transition-all ${
+                        className={`relative rounded-2xl border px-2 py-3 text-center transition-colors ${
                           active
                             ? 'border-danger-300 bg-danger-50 shadow-md shadow-danger-500/10 dark:border-danger-500/40 dark:bg-danger-500/15'
                             : done
@@ -601,13 +578,6 @@ export default function InstallPage () {
           </motion.div>
         </PureLayout>
       </div>
-
-      <style>{`
-        @keyframes shine {
-          0% { background-position: 200% 0; }
-          100% { background-position: -200% 0; }
-        }
-      `}</style>
     </>
   );
 }

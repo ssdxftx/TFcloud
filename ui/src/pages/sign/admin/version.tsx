@@ -76,9 +76,7 @@ export default function AdminVersionPage() {
 
   return (
     <div className="flex flex-col gap-5">
-      <Card className="relative isolate overflow-hidden rounded-[30px] border border-primary/15 bg-content1/80 shadow-xl shadow-primary/5 backdrop-blur-xl">
-        <div className="pointer-events-none absolute -right-24 -top-32 -z-10 h-72 w-72 rounded-full bg-primary/20 blur-3xl" />
-        <div className="pointer-events-none absolute -bottom-32 left-1/3 -z-10 h-64 w-64 rounded-full bg-secondary/15 blur-3xl" />
+      <Card className="relative isolate overflow-hidden rounded-[30px] border border-primary/15 bg-content1 shadow-xl shadow-primary/5">
         <CardBody className="grid gap-6 p-6 md:grid-cols-[1fr_auto] md:items-center md:p-8">
           <div className="flex items-center gap-5">
             <div className="grid h-20 w-20 shrink-0 place-items-center rounded-[24px] bg-background/80 shadow-xl shadow-primary/15 ring-1 ring-primary/15">

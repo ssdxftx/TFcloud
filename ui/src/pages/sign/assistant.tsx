@@ -267,8 +267,7 @@ export default function AssistantPage () {
 
   return (
     <Card className='tf-glass-card mx-auto min-h-[700px] max-w-6xl overflow-hidden rounded-[30px] border border-white/40 shadow-[0_24px_70px_-36px_rgba(37,99,235,0.35)] lg:h-[calc(100vh-8.7rem)]'>
-      <CardHeader className='relative flex min-h-[76px] items-center justify-between overflow-hidden border-b border-divider/50 bg-content1/70 px-5 py-4 backdrop-blur-xl md:px-7'>
-        <div className='pointer-events-none absolute -left-16 -top-24 h-44 w-44 rounded-full bg-primary/10 blur-3xl' />
+      <CardHeader className='relative flex min-h-[76px] items-center justify-between overflow-hidden border-b border-divider/50 bg-content1 px-5 py-4 md:px-7'>
         <div className='relative flex min-w-0 items-center gap-3.5'>
           <div className='relative'>
             <div className='grid h-12 w-12 place-items-center overflow-hidden rounded-[18px] border border-white/80 bg-white shadow-sm dark:border-white/10'>
@@ -300,8 +299,6 @@ export default function AssistantPage () {
       </CardHeader>
 
       <CardBody className='relative min-h-0 gap-0 bg-gradient-to-b from-default-50/60 via-content1/35 to-content1/70 p-0 dark:from-content2/35'>
-        <div className='pointer-events-none absolute right-[-8rem] top-12 h-72 w-72 rounded-full bg-secondary/5 blur-3xl' />
-        <div className='pointer-events-none absolute bottom-12 left-[-8rem] h-72 w-72 rounded-full bg-primary/5 blur-3xl' />
 
         {!ready ? (
           <div className='relative flex flex-1 flex-col items-center justify-center px-6 py-20 text-center'>
@@ -314,11 +311,7 @@ export default function AssistantPage () {
           <>
             <div ref={scrollRef} className='relative flex-1 overflow-y-auto overscroll-contain px-4 py-6 md:px-8 md:py-8'>
               <div className='mx-auto max-w-4xl space-y-6'>
-                <motion.div
-                  initial={{ opacity: 0, y: 8 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className='flex items-start gap-3.5'
-                >
+                <div className='flex items-start gap-3.5'>
                   <div className='grid h-9 w-9 shrink-0 place-items-center overflow-hidden rounded-[13px] border border-white/80 bg-white shadow-sm dark:border-white/10'>
                     <PlatformLogo size={34} />
                   </div>
@@ -327,19 +320,14 @@ export default function AssistantPage () {
                       <span className='text-xs font-medium text-default-600'>{assistantName}</span>
                       <LuSparkles className='text-xs text-warning' />
                     </div>
-                    <div className='rounded-[22px] rounded-tl-md border border-divider/60 bg-content1/90 px-4 py-3.5 shadow-[0_8px_28px_-20px_rgba(15,23,42,0.35)] backdrop-blur'>
+                    <div className='rounded-[22px] rounded-tl-md border border-divider/60 bg-content1/90 px-4 py-3.5 shadow-[0_8px_28px_-20px_rgba(15,23,42,0.35)]'>
                       <MessageContent content={welcomeMessage} />
                     </div>
                   </div>
-                </motion.div>
+                </div>
 
                 {messages.length === 0 && (
-                  <motion.div
-                    initial={{ opacity: 0, y: 8 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.08 }}
-                    className='ml-0 grid gap-2.5 pt-1 sm:ml-[3.25rem] sm:grid-cols-3'
-                  >
+                  <div className='ml-0 grid gap-2.5 pt-1 sm:ml-[3.25rem] sm:grid-cols-3'>
                     {starterQuestions.map((item) => (
                       <button
                         key={item.title}
@@ -353,16 +341,14 @@ export default function AssistantPage () {
                         <span className='mt-1 block text-[11px] leading-5 text-default-400'>{item.description}</span>
                       </button>
                     ))}
-                  </motion.div>
+                  </div>
                 )}
 
                 {messages.map((message) => {
                   const mine = message.role === 'user';
                   return (
-                    <motion.div
+                    <div
                       key={message.id}
-                      initial={{ opacity: 0, y: 7 }}
-                      animate={{ opacity: 1, y: 0 }}
                       className={`flex items-start gap-3.5 ${mine ? 'flex-row-reverse' : ''}`}
                     >
                       {mine
@@ -372,7 +358,7 @@ export default function AssistantPage () {
                         <span className='mb-1.5 px-1 text-xs font-medium text-default-500'>{mine ? (user?.username || '你') : assistantName}</span>
                         <div className={mine
                           ? 'rounded-[22px] rounded-tr-md bg-gradient-to-br from-primary to-blue-500 px-4 py-3 text-white shadow-[0_12px_28px_-18px_rgba(37,99,235,0.8)]'
-                          : `rounded-[22px] rounded-tl-md border px-4 py-3.5 shadow-[0_8px_28px_-20px_rgba(15,23,42,0.35)] backdrop-blur ${message.status === 'failed' ? 'border-danger/20 bg-danger/5' : 'border-divider/60 bg-content1/90'}`}>
+                          : `rounded-[22px] rounded-tl-md border px-4 py-3.5 shadow-[0_8px_28px_-20px_rgba(15,23,42,0.35)] ${message.status === 'failed' ? 'border-danger/20 bg-danger/5' : 'border-divider/60 bg-content1/90'}`}>
                           {message.content
                             ? (
                                 <>
@@ -386,13 +372,13 @@ export default function AssistantPage () {
                         </div>
                         <span className='mt-1.5 px-1 text-[10px] text-default-400'>{formatDateTime(message.created_at)}</span>
                       </div>
-                    </motion.div>
+                    </div>
                   );
                 })}
               </div>
             </div>
 
-            <div className='relative border-t border-divider/50 bg-content1/75 p-3 backdrop-blur-xl md:px-6 md:py-4'>
+            <div className='relative border-t border-divider/50 bg-content1 p-3 md:px-6 md:py-4'>
               <div className='mx-auto flex max-w-4xl items-end gap-2 rounded-[22px] border border-divider/80 bg-content1 p-2 shadow-[0_12px_40px_-28px_rgba(15,23,42,0.6)] transition duration-200 focus-within:border-primary/40 focus-within:shadow-[0_14px_44px_-26px_rgba(37,99,235,0.45)]'>
                 <Textarea
                   ref={inputRef}

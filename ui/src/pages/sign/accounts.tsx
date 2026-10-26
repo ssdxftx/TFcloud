@@ -5,7 +5,6 @@ import { Modal, ModalBody, ModalContent, ModalFooter, ModalHeader } from '@herou
 import { Select, SelectItem } from '@heroui/select';
 import { Spinner } from '@heroui/spinner';
 import { Switch } from '@heroui/switch';
-import { motion } from 'motion/react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'react-hot-toast';
@@ -559,18 +558,17 @@ export default function AccountsPage () {
     } catch (error) { toast.error(errorMessage(error)); } finally { setBusyKey(null); }
   };
 
-  const accountCard = (account: PluginAccount, platform: Platform, index: number) => {
+  const accountCard = (account: PluginAccount, platform: Platform) => {
     const style = platformStyles[platform.code] || fallbackStyle;
     const expired = account.login_status === 'expired' || account.status === 'credential_expired' || ['PLUGIN_CREDENTIAL_EXPIRED', 'PLUGIN_CREDENTIAL_INVALID'].includes(account.last_error?.code || '');
     const cardSurface = expired
       ? '!border-danger-400/70 !bg-danger-50 shadow-danger-500/10 dark:!border-danger-400/35 dark:!bg-danger-50/10'
       : `border-white/70 ${style.surface}`;
     return (
-      <motion.div key={account.id} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: Math.min(index * 0.04, 0.2) }} whileHover={{ y: -3 }}>
-        <Card className={`tf-glass-card relative h-full overflow-hidden rounded-[26px] border ${cardSurface}`}>
+        <Card key={account.id} className={`tf-glass-card tf-account-card relative h-full overflow-hidden rounded-[26px] border ${cardSurface}`}>
           <div className={`h-1.5 bg-gradient-to-r ${expired ? 'from-danger-500 to-rose-400' : style.accent}`} />
           {platformLogoByCode[platform.code]
-            ? <img src={platformLogoByCode[platform.code]} alt='' aria-hidden className='pointer-events-none absolute -bottom-8 -right-6 h-36 w-36 select-none rounded-[32px] object-cover opacity-[0.055] grayscale' />
+            ? <img src={platformLogoByCode[platform.code]} alt='' aria-hidden className='pointer-events-none absolute -bottom-8 -right-6 h-36 w-36 select-none rounded-[32px] object-cover opacity-[0.055] grayscale' decoding='async' loading='lazy' />
             : <span className={`pointer-events-none absolute -bottom-8 -right-3 select-none text-[112px] font-black leading-none opacity-[0.045] ${expired ? 'text-danger-700' : ''}`}>{style.glyph}</span>}
           <CardHeader className='relative flex items-start justify-between px-5 pt-5'>
             <div className='flex min-w-0 items-center gap-3'><PlatformBrandIcon code={platform.code} name={platform.name} avatarUrl={account.avatar_url} fallback={style.glyph} className={`h-12 w-12 rounded-2xl shadow-lg ${expired ? 'ring-2 ring-danger-400 ring-offset-2 ring-offset-background' : ''}`} fallbackClassName={`bg-gradient-to-br text-lg font-black text-white ${expired ? 'from-danger-500 to-rose-400' : style.accent}`} /><div className='min-w-0'><div className={`mb-1 inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold ${expired ? 'bg-danger-500/15 text-danger-700 dark:text-danger-300' : style.badge}`}>{platform.name}</div><h3 className='truncate font-semibold'>{account.display_name || '未命名账号'}</h3><p className='truncate text-xs text-default-400'>{account.external_user_id || `账号 #${account.id}`}</p></div></div>
@@ -594,7 +592,6 @@ export default function AccountsPage () {
             <Button size='sm' variant='light' color='danger' isIconOnly aria-label='删除账号' isLoading={busyKey === `${account.id}:delete`} isDisabled={Boolean(busyKey && busyKey.startsWith(`${account.id}:`))} onPress={() => void operate(account, 'delete')}><LuTrash2 /></Button>
           </CardFooter>
         </Card>
-      </motion.div>
     );
   };
 
@@ -605,7 +602,7 @@ export default function AccountsPage () {
       <div className='flex flex-col justify-between gap-3 sm:flex-row sm:items-end'><div><h2 className='text-xl font-semibold'>我的平台账号</h2><p className='mt-1 text-sm text-default-500'>按平台分类管理，登录状态均加密存储（就算黑客偷了都没办法的那种）</p></div><Button color='primary' className='tf-soft-button' startContent={<LuCirclePlus />} onPress={openCreate}>添加账号</Button></div>
       {!accounts.length && <Card className='tf-glass-card rounded-[28px] border-dashed'><CardBody className='items-center gap-3 py-16 text-center'><div className='flex h-16 w-16 items-center justify-center rounded-3xl bg-primary/10'><LuCirclePlus className='text-3xl text-primary' /></div><h3 className='font-medium'>还没有平台账号</h3><p className='text-sm text-default-500'>选择平台，通过扫码或账号密码即可添加</p><Button color='primary' variant='flat' onPress={openCreate}>立即添加</Button></CardBody></Card>}
       {!!accounts.length && <div className='flex gap-2 overflow-x-auto rounded-2xl border border-divider bg-content1/55 p-2 shadow-sm'><button type='button' onClick={() => setPlatformFilter('all')} className={`shrink-0 rounded-xl px-4 py-2 text-sm font-medium transition ${platformFilter === 'all' ? 'bg-primary text-white shadow-md shadow-primary/20' : 'text-default-500 hover:bg-default-100'}`}>全部 <span className='ml-1 opacity-75'>{accounts.length}</span></button>{grouped.map(({ platform, accounts: rows }) => { const style = platformStyles[platform.code] || fallbackStyle; return <button key={platform.code} type='button' onClick={() => setPlatformFilter(platform.code)} className={`flex shrink-0 items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium transition ${platformFilter === platform.code ? 'bg-content1 text-foreground shadow-md ring-1 ring-divider' : 'text-default-500 hover:bg-default-100'}`}><PlatformBrandIcon code={platform.code} name={platform.name} fallback={style.glyph} className='h-6 w-6 rounded-lg' fallbackClassName={`text-xs font-black ${style.badge}`} />{platform.name}<span className='text-xs opacity-60'>{rows.length}</span></button>; })}</div>}
-      {visibleGroups.map(({ platform, accounts: rows }) => <section key={platform.code} className='flex flex-col gap-3'><div className='flex items-center gap-3'><h3 className='font-semibold'>{platform.name}</h3><span className='rounded-full bg-default-100 px-2.5 py-1 text-xs text-default-500'>{rows.length} 个账号</span><div className='h-px flex-1 bg-divider' /></div><div className='grid gap-4 lg:grid-cols-2 2xl:grid-cols-3'>{rows.map((account, index) => accountCard(account, platform, index))}</div></section>)}
+      {visibleGroups.map(({ platform, accounts: rows }) => <section key={platform.code} className='flex flex-col gap-3'><div className='flex items-center gap-3'><h3 className='font-semibold'>{platform.name}</h3><span className='rounded-full bg-default-100 px-2.5 py-1 text-xs text-default-500'>{rows.length} 个账号</span><div className='h-px flex-1 bg-divider' /></div><div className='grid gap-4 lg:grid-cols-2 2xl:grid-cols-3'>{rows.map((account) => accountCard(account, platform))}</div></section>)}
 
       <Modal isOpen={modalOpen} onOpenChange={(open) => { setModalOpen(open); if (!open) { setQrFlow(null); setAuthResult(null); setRenewing(null); } }} size='2xl' scrollBehavior='inside'>
         <ModalContent className='tf-glass rounded-[26px]'>
