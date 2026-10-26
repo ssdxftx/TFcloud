@@ -78,6 +78,27 @@ func TestNormalizeLegacySettings(t *testing.T) {
 	}
 }
 
+func TestPaginateSupportsOffset(t *testing.T) {
+	page, perPage, offset := paginate(map[string]any{"limit": "20", "offset": "40"}, 20)
+	if page != 3 || perPage != 20 || offset != 40 {
+		t.Fatalf("offset 分页解析错误: page=%d perPage=%d offset=%d", page, perPage, offset)
+	}
+}
+
+func TestRandomCodeFormat(t *testing.T) {
+	for i := 0; i < 200; i++ {
+		code := randomCode()
+		if len(code) != 6 {
+			t.Fatalf("验证码长度应为 6，实际 %q", code)
+		}
+		for _, r := range code {
+			if r < '0' || r > '9' {
+				t.Fatalf("验证码必须为数字，实际 %q", code)
+			}
+		}
+	}
+}
+
 func TestRetryPolicy(t *testing.T) {
 	if retryDelaySeconds(1) != 60 {
 		t.Fatal("首次重试应为 60 秒")

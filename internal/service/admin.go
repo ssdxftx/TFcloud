@@ -118,13 +118,22 @@ func (s *AdminService) CreateUser(input map[string]any, adminID int64) (map[stri
 		return nil, respond.NewError("VALIDATION_FAILED", "角色无效", 422)
 	}
 	status := firstNonEmpty(strings.TrimSpace(str(input["status"])), "active")
+	if status != "active" && status != "disabled" {
+		return nil, respond.NewError("VALIDATION_FAILED", "状态无效", 422)
+	}
+	email := strings.ToLower(strings.TrimSpace(str(input["email"])))
+	if email != "" && (!validEmail(email) || len(email) > 191) {
+		return nil, respond.NewError("VALIDATION_FAILED", "邮箱格式不正确或过长", 422)
+	}
+	qq := strings.TrimSpace(str(input["qq"]))
+	if len(qq) > 32 {
+		return nil, respond.NewError("VALIDATION_FAILED", "QQ号过长", 422)
+	}
 	hash, err := secure.HashPassword(password)
 	if err != nil {
 		return nil, respond.Internal("密码加密失败")
 	}
 	now := database.Now()
-	email := strings.TrimSpace(str(input["email"]))
-	qq := strings.TrimSpace(str(input["qq"]))
 	_, err = s.store.Write.Exec(`INSERT INTO TF_users
 		(username, username_norm, password_hash, display_name, email, email_norm, qq, role, status,
 		 daily_sign_email, push_channel, password_migrated_at, created_at, updated_at)
@@ -145,6 +154,14 @@ func (s *AdminService) CreateUser(input map[string]any, adminID int64) (map[stri
 }
 
 func (s *AdminService) UpdateUser(id int64, input map[string]any, adminID int64) (map[string]any, error) {
+	var current struct {
+		Role   string `db:"role"`
+		Status string `db:"status"`
+	}
+	if err := s.store.Read.Get(&current, `SELECT role, status FROM TF_users WHERE id = ?`, id); err != nil {
+		return nil, respond.NotFound("用户不存在")
+	}
+	finalRole, finalStatus := current.Role, current.Status
 	sets := []string{"updated_at = ?"}
 	args := []any{database.Now()}
 	if v, ok := input["display_name"]; ok {
@@ -153,21 +170,26 @@ func (s *AdminService) UpdateUser(id int64, input map[string]any, adminID int64)
 	}
 	if v, ok := input["email"]; ok {
 		email := strings.ToLower(strings.TrimSpace(str(v)))
-		if email != "" && !validEmail(email) {
-			return nil, respond.NewError("VALIDATION_FAILED", "邮箱格式不正确", 422)
+		if email != "" && (!validEmail(email) || len(email) > 191) {
+			return nil, respond.NewError("VALIDATION_FAILED", "邮箱格式不正确或过长", 422)
 		}
 		sets = append(sets, "email = ?", "email_norm = ?")
 		args = append(args, nullableString(email), nullableString(NormalizeIdentity(email)))
 	}
 	if v, ok := input["qq"]; ok {
+		qq := strings.TrimSpace(str(v))
+		if len(qq) > 32 {
+			return nil, respond.NewError("VALIDATION_FAILED", "QQ号过长", 422)
+		}
 		sets = append(sets, "qq = ?")
-		args = append(args, nullableString(strings.TrimSpace(str(v))))
+		args = append(args, nullableString(qq))
 	}
 	if v, ok := input["role"]; ok {
 		role := strings.TrimSpace(str(v))
 		if role != "user" && role != "admin" {
 			return nil, respond.NewError("VALIDATION_FAILED", "角色无效", 422)
 		}
+		finalRole = role
 		sets = append(sets, "role = ?")
 		args = append(args, role)
 	}
@@ -176,8 +198,17 @@ func (s *AdminService) UpdateUser(id int64, input map[string]any, adminID int64)
 		if !contains([]string{"active", "disabled"}, status) {
 			return nil, respond.NewError("VALIDATION_FAILED", "状态无效", 422)
 		}
+		finalStatus = status
 		sets = append(sets, "status = ?")
 		args = append(args, status)
+	}
+	if current.Role == "admin" && current.Status == "active" &&
+		(finalRole != "admin" || finalStatus != "active") {
+		var admins int
+		_ = s.store.Read.Get(&admins, `SELECT COUNT(1) FROM TF_users WHERE role='admin' AND status='active'`)
+		if admins <= 1 {
+			return nil, respond.NewError("VALIDATION_FAILED", "不能停用或降级最后一个管理员", 422)
+		}
 	}
 	args = append(args, id)
 	if _, err := s.store.Write.Exec(`UPDATE TF_users SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...); err != nil {
@@ -219,9 +250,13 @@ func (s *AdminService) ResetUserPassword(id int64, password string, adminID int6
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.Exec(`UPDATE TF_users SET password_hash=?, password_migrated_at=?, updated_at=? WHERE id=?`,
-		hash, now, now, id); err != nil {
+	res, err := tx.Exec(`UPDATE TF_users SET password_hash=?, password_migrated_at=?, updated_at=? WHERE id=?`,
+		hash, now, now, id)
+	if err != nil {
 		return err
+	}
+	if affected, _ := res.RowsAffected(); affected != 1 {
+		return respond.NotFound("用户不存在")
 	}
 	if _, err := tx.Exec(`UPDATE TF_sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL`, now, id); err != nil {
 		return err
@@ -357,6 +392,10 @@ func (s *AdminService) Accounts(filters map[string]any) (map[string]any, error) 
 	if code := strings.TrimSpace(str(filters["plugin_code"])); code != "" {
 		where = append(where, "a.plugin_code = ?")
 		args = append(args, code)
+	}
+	if status := strings.TrimSpace(str(filters["status"])); status != "" {
+		where = append(where, "a.status = ?")
+		args = append(args, status)
 	}
 	if keyword := strings.TrimSpace(str(filters["keyword"])); keyword != "" {
 		like := "%" + escapeLike(keyword) + "%"

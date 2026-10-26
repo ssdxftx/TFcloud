@@ -228,29 +228,35 @@ func (m *MailService) Records(taskNo string) (map[string]any, error) {
 	return map[string]any{"task_no": taskNo, "items": items}, nil
 }
 
-func (m *MailService) AllRecords(keyword, status string, limit, offset int) (map[string]any, error) {
+func (m *MailService) AllRecords(keyword, status, templateCode string, limit, offset int) (map[string]any, error) {
 	where := []string{"1=1"}
 	args := []any{}
 	if keyword != "" {
-		where = append(where, "(recipient LIKE ? OR message_no LIKE ? OR subject LIKE ?)")
+		where = append(where, "(r.recipient LIKE ? OR r.message_no LIKE ? OR r.subject LIKE ?)")
 		like := "%" + keyword + "%"
 		args = append(args, like, like, like)
 	}
 	if status != "" {
-		where = append(where, "status = ?")
+		where = append(where, "r.status = ?")
 		args = append(args, status)
+	}
+	if templateCode != "" {
+		where = append(where, "t.template_code = ?")
+		args = append(args, templateCode)
 	}
 	clause := strings.Join(where, " AND ")
 	countArgs := append([]any{}, args...)
 	args = append(args, limit, offset)
-	items, err := m.store.Maps(`SELECT id, task_id, message_no, recipient, subject, status, attempts,
-		provider_message_id, last_error_code, last_error_message, sent_at, created_at
-		FROM TF_mail_records WHERE `+clause+` ORDER BY id DESC LIMIT ? OFFSET ?`, args...)
+	items, err := m.store.Maps(`SELECT r.id, r.task_id, r.message_no, r.recipient, r.subject, r.status, r.attempts,
+		r.provider_message_id, r.last_error_code, r.last_error_message, r.sent_at, r.created_at
+		FROM TF_mail_records r LEFT JOIN TF_mail_tasks t ON t.id = r.task_id
+		WHERE `+clause+` ORDER BY r.id DESC LIMIT ? OFFSET ?`, args...)
 	if err != nil {
 		return nil, err
 	}
 	var total int
-	_ = m.store.Read.Get(&total, `SELECT COUNT(1) FROM TF_mail_records WHERE `+clause, countArgs...)
+	_ = m.store.Read.Get(&total, `SELECT COUNT(1) FROM TF_mail_records r
+		LEFT JOIN TF_mail_tasks t ON t.id = r.task_id WHERE `+clause, countArgs...)
 	return map[string]any{"items": items, "total": total, "limit": limit, "offset": offset}, nil
 }
 

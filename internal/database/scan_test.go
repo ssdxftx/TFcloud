@@ -55,4 +55,10 @@ func TestMigrateAndMaps(t *testing.T) {
 		VALUES('U1','u1','user','active',?,?)`, Now(), Now()); err == nil {
 		t.Fatal("username_norm 唯一索引未生效")
 	}
+
+	// 读池必须是 query_only，防止误写破坏单写连接模型。
+	if _, err := store.Read.Exec(`INSERT INTO TF_users(username, username_norm, role, status, created_at, updated_at)
+		VALUES('u2','u2','user','active',?,?)`, Now(), Now()); err == nil {
+		t.Fatal("读池不应允许写入")
+	}
 }

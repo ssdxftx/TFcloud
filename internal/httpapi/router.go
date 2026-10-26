@@ -18,6 +18,7 @@ func (s *Server) Router(static http.Handler) http.Handler {
 	r := chi.NewRouter()
 	r.Use(chimw.RealIP)
 	r.Use(middleware.RequestID())
+	r.Use(middleware.SecurityHeaders)
 	r.Use(s.mw().Recover)
 	r.Use(s.mw().CORSHandler)
 	r.Use(s.mw().InstallGuard)
@@ -33,10 +34,11 @@ func (s *Server) Router(static http.Handler) http.Handler {
 		sensitive := middleware.NewRateLimiter(10, time.Minute)
 
 		// 安装向导
+		installLimiter := middleware.NewRateLimiter(10, time.Minute)
 		api.Get("/install/status", s.installStatus)
-		api.Get("/install/checks", s.installChecks)
-		api.Post("/install/test-database", s.installTestStorage)
-		api.Post("/install", s.installRun)
+		api.With(installLimiter.Limit("install")).Get("/install/checks", s.installChecks)
+		api.With(installLimiter.Limit("install")).Post("/install/test-database", s.installTestStorage)
+		api.With(installLimiter.Limit("install")).Post("/install", s.installRun)
 
 		// 认证
 		api.Group(func(auth chi.Router) {
@@ -184,7 +186,7 @@ func (s *Server) mw() *middleware.Middleware {
 	return &middleware.Middleware{
 		Auth:      s.Auth,
 		Installed: s.Cfg.IsInstalled,
-		CORS:      s.Cfg.CORSAllowedOrigins,
+		CORS:      func() []string { return s.Cfg.CORSAllowedOrigins },
 		Logger:    s.Logger,
 	}
 }

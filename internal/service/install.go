@@ -2,11 +2,13 @@ package service
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -20,6 +22,7 @@ type InstallService struct {
 	store    *database.Store
 	cfg      *config.Config
 	settings *SettingsService
+	mu       sync.Mutex
 }
 
 func NewInstall(store *database.Store, cfg *config.Config, settings *SettingsService) *InstallService {
@@ -30,16 +33,20 @@ func (s *InstallService) Status() map[string]any {
 	installed := s.cfg.IsInstalled()
 	_, envErr := os.Stat(filepath.Join(s.cfg.DataDir, ".env"))
 	_, markerErr := os.Stat(s.cfg.InstalledMarker())
-	return map[string]any{
-		"installed":     installed,
-		"lock_exists":   markerErr == nil,
-		"env_exists":    envErr == nil,
-		"can_install":   !installed,
-		"restart_hint":  "安装完成后无需重启，配置即时生效",
-		"storage":       "sqlite",
-		"data_dir":      s.cfg.DataDir,
-		"database_path": s.cfg.Database,
+	out := map[string]any{
+		"installed":    installed,
+		"lock_exists":  markerErr == nil,
+		"env_exists":   envErr == nil,
+		"can_install":  !installed,
+		"restart_hint": "安装完成后无需重启，配置即时生效",
+		"storage":      "sqlite",
 	}
+	if !installed {
+		// 安装完成后不再对外暴露服务器路径。
+		out["data_dir"] = s.cfg.DataDir
+		out["database_path"] = s.cfg.Database
+	}
+	return out
 }
 
 func (s *InstallService) Checks() map[string]any {
@@ -103,15 +110,15 @@ type InstallInput struct {
 }
 
 func (s *InstallService) Run(in InstallInput) (map[string]any, error) {
+	// 单实例内串行安装，避免两个请求同时通过未安装检查后各自创建管理员。
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.cfg.IsInstalled() {
 		return nil, respond.NewError("ALREADY_INSTALLED", "站点已完成安装", 409)
 	}
-	siteURL := strings.TrimRight(strings.TrimSpace(in.SiteURL), "/")
-	if siteURL == "" {
-		return nil, respond.NewError("VALIDATION_FAILED", "请填写站点地址", 422)
-	}
-	if !strings.HasPrefix(siteURL, "http://") && !strings.HasPrefix(siteURL, "https://") {
-		siteURL = "https://" + siteURL
+	siteURL, origin, scheme, err := normalizeSiteURL(in.SiteURL)
+	if err != nil {
+		return nil, err
 	}
 	username := strings.TrimSpace(in.Admin.Username)
 	if len([]rune(username)) < 2 || len([]rune(username)) > 64 {
@@ -132,8 +139,8 @@ func (s *InstallService) Run(in InstallInput) (map[string]any, error) {
 		"TF_DATA_DIR":                  s.cfg.DataDir,
 		"SQLITE_PATH":                  s.cfg.Database,
 		"HTTP_ADDR":                    s.cfg.HTTPAddr,
-		"CORS_ALLOWED_ORIGINS":         siteURL,
-		"SESSION_SECURE":               strconv.FormatBool(strings.HasPrefix(siteURL, "https://")),
+		"CORS_ALLOWED_ORIGINS":         origin,
+		"SESSION_SECURE":               strconv.FormatBool(in.SessionSecure || scheme == "https"),
 		"SIGN_WORKER_ENABLED":          "true",
 		"SIGN_WORKER_COUNT":            strconv.Itoa(s.cfg.SignWorkerCount),
 		"SIGN_SCHEDULER_ENABLED":       "true",
@@ -215,6 +222,31 @@ func (s *InstallService) Run(in InstallInput) (map[string]any, error) {
 	}, nil
 }
 
+// normalizeSiteURL 校验安装时填写的站点地址，并返回用于配置的 origin。
+// 站点地址会写入 .env，必须拒绝换行/控制字符，避免注入额外环境变量。
+func normalizeSiteURL(raw string) (siteURL, origin, scheme string, err error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", "", "", respond.NewError("VALIDATION_FAILED", "请填写站点地址", 422)
+	}
+	if strings.ContainsAny(raw, " \t\r\n\x00") {
+		return "", "", "", respond.NewError("VALIDATION_FAILED", "站点地址包含非法字符", 422)
+	}
+	if !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+	parsed, parseErr := url.Parse(raw)
+	if parseErr != nil || parsed.Host == "" || parsed.Hostname() == "" ||
+		(parsed.Scheme != "http" && parsed.Scheme != "https") ||
+		parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", "", "", respond.NewError("VALIDATION_FAILED", "站点地址必须是有效的 http(s) 地址", 422)
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/")
+	siteURL = parsed.String()
+	origin = parsed.Scheme + "://" + parsed.Host
+	return siteURL, origin, parsed.Scheme, nil
+}
+
 func dirWritable(dir string) bool {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return false
@@ -231,7 +263,10 @@ func writeEnv(path string, values map[string]string) error {
 	var b strings.Builder
 	b.WriteString("# 由安装向导生成，请勿泄露\n")
 	keys := make([]string, 0, len(values))
-	for k := range values {
+	for k, v := range values {
+		if strings.ContainsAny(k, "\r\n\x00") || strings.ContainsAny(v, "\r\n\x00") {
+			return fmt.Errorf("环境变量 %s 包含非法字符", k)
+		}
 		keys = append(keys, k)
 	}
 	// 稳定输出，便于 diff

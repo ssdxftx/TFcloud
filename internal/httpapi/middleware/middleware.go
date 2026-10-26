@@ -74,8 +74,15 @@ func ExtractToken(r *http.Request) string {
 type Middleware struct {
 	Auth      Authenticator
 	Installed func() bool
-	CORS      []string
+	CORS      func() []string
 	Logger    *slog.Logger
+}
+
+func (m *Middleware) corsOrigins() []string {
+	if m.CORS == nil {
+		return nil
+	}
+	return m.CORS()
 }
 
 func RequestID() func(http.Handler) http.Handler {
@@ -109,14 +116,18 @@ func (m *Middleware) Recover(next http.Handler) http.Handler {
 func (m *Middleware) CORSHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		if origin != "" && m.originAllowed(origin) {
-			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Vary", "Origin")
-			w.Header().Set("Access-Control-Allow-Credentials", "true")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Request-Id, Accept")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Expose-Headers", "X-Request-Id")
-			w.Header().Set("Access-Control-Max-Age", "86400")
+		if origin != "" {
+			w.Header().Add("Vary", "Origin")
+			if allowed, credentials := m.originAllowed(origin); allowed {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				if credentials {
+					w.Header().Set("Access-Control-Allow-Credentials", "true")
+				}
+				w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Request-Id, X-Auth-Token, Accept")
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS")
+				w.Header().Set("Access-Control-Expose-Headers", "X-Request-Id")
+				w.Header().Set("Access-Control-Max-Age", "86400")
+			}
 		}
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -126,17 +137,35 @@ func (m *Middleware) CORSHandler(next http.Handler) http.Handler {
 	})
 }
 
-func (m *Middleware) originAllowed(origin string) bool {
-	if len(m.CORS) == 0 {
-		return true // 同源部署为主，未配置时放开预检（凭据仍受 Token 保护）
+// originAllowed 只对显式配置的来源开放跨域。同源请求不依赖 CORS，
+// 因此未配置 CORS_ALLOWED_ORIGINS 时必须拒绝跨域，避免任意站点带 Cookie 读取接口。
+// 通配符来源仅用于无凭据的公开接口，禁止与 Allow-Credentials 同时出现。
+func (m *Middleware) originAllowed(origin string) (allowed, credentials bool) {
+	origins := m.corsOrigins()
+	if len(origins) == 0 {
+		return false, false
 	}
 	trimmed := strings.TrimRight(origin, "/")
-	for _, allowed := range m.CORS {
-		if allowed == "*" || strings.EqualFold(allowed, trimmed) {
-			return true
+	for _, item := range origins {
+		if item == "*" {
+			return true, false
+		}
+		if strings.EqualFold(item, trimmed) {
+			return true, true
 		}
 	}
-	return false
+	return false, false
+}
+
+// SecurityHeaders 设置与具体业务无关的基础安全响应头。
+func SecurityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // InstallGuard 在未安装时把除安装接口外的请求挡在门外。
@@ -230,20 +259,29 @@ func NewRateLimiter(limit int, window time.Duration) *RateLimiter {
 	return &RateLimiter{limit: limit, window: window, buckets: make(map[string]*bucket)}
 }
 
+const maxRateLimitBuckets = 20000
+
 func (l *RateLimiter) Allow(key string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := time.Now()
 	b, ok := l.buckets[key]
 	if !ok || now.After(b.reset) {
-		l.buckets[key] = &bucket{count: 1, reset: now.Add(l.window)}
-		if len(l.buckets) > 20000 {
+		if len(l.buckets) >= maxRateLimitBuckets {
 			for k, v := range l.buckets {
 				if now.After(v.reset) {
 					delete(l.buckets, k)
 				}
 			}
+			// 仍然满载时淘汰约 10% 的旧桶，避免伪造 IP 无限撑大内存。
+			for k := range l.buckets {
+				delete(l.buckets, k)
+				if len(l.buckets) < maxRateLimitBuckets*9/10 {
+					break
+				}
+			}
 		}
+		l.buckets[key] = &bucket{count: 1, reset: now.Add(l.window)}
 		return true
 	}
 	if b.count >= l.limit {

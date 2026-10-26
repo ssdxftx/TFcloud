@@ -3,6 +3,7 @@ package httpapi
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	"tfcloud/internal/httpapi/middleware"
 	"tfcloud/internal/httpapi/respond"
@@ -45,10 +46,18 @@ func (s *Server) installStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) installChecks(w http.ResponseWriter, r *http.Request) {
+	if s.Cfg.IsInstalled() {
+		respond.Fail(w, r, respond.NewError("ALREADY_INSTALLED", "站点已完成安装", 409))
+		return
+	}
 	respond.OK(w, r, s.Install.Checks())
 }
 
 func (s *Server) installTestStorage(w http.ResponseWriter, r *http.Request) {
+	if s.Cfg.IsInstalled() {
+		respond.Fail(w, r, respond.NewError("ALREADY_INSTALLED", "站点已完成安装", 409))
+		return
+	}
 	respond.OK(w, r, s.Install.TestStorage())
 }
 
@@ -353,6 +362,14 @@ func (s *Server) qqRegister(w http.ResponseWriter, r *http.Request) {
 
 // ---------- Cookie ----------
 
+func (s *Server) sessionMaxAge() int {
+	ttl := s.Cfg.SessionTTL
+	if ttl <= 0 {
+		ttl = 14 * 24 * time.Hour
+	}
+	return int(ttl / time.Second)
+}
+
 func (s *Server) setSessionCookie(w http.ResponseWriter, token string) {
 	if token == "" {
 		return
@@ -364,7 +381,7 @@ func (s *Server) setSessionCookie(w http.ResponseWriter, token string) {
 		HttpOnly: true,
 		Secure:   s.Cfg.SessionSecure,
 		SameSite: http.SameSiteLaxMode,
-		MaxAge:   14 * 24 * 60 * 60,
+		MaxAge:   s.sessionMaxAge(),
 	})
 }
 
@@ -375,6 +392,7 @@ func (s *Server) clearSessionCookie(w http.ResponseWriter) {
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   s.Cfg.SessionSecure,
+		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})
 }

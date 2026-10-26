@@ -52,7 +52,7 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("数据库不可用: %w", err)
 	}
 
-	read, err := sqlx.Open("sqlite", dsn+"&_pragma=query_only(0)")
+	read, err := sqlx.Open("sqlite", dsn+"&_pragma=query_only(1)")
 	if err != nil {
 		return nil, fmt.Errorf("打开只读连接失败: %w", err)
 	}

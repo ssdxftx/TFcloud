@@ -139,6 +139,9 @@ func (s *AccountService) Create(userID int64, input map[string]any) (map[string]
 	if settingsMap == nil {
 		settingsMap = map[string]any{}
 	}
+	if err := validateSettingsPayload(settingsMap); err != nil {
+		return nil, err
+	}
 
 	profile, err := plugin.ValidateAccount(credentials)
 	if err != nil {
@@ -229,6 +232,9 @@ func (s *AccountService) Update(userID, accountID int64, input map[string]any) (
 		settingsMap, isMap := raw.(map[string]any)
 		if !isMap {
 			return nil, respond.NewError("VALIDATION_FAILED", "settings 必须是对象", 422)
+		}
+		if err := validateSettingsPayload(settingsMap); err != nil {
+			return nil, err
 		}
 		if err := validateSettings(acc.PluginCode, settingsMap); err != nil {
 			return nil, err
@@ -451,10 +457,29 @@ func assertCredentialShape(plugin sign.Plugin, credentials map[string]any) error
 	if len(missing) > 0 {
 		return respond.NewError("PLUGIN_CREDENTIAL_INVALID", "缺少平台凭据："+strings.Join(missing, ", "), 422)
 	}
-	for _, v := range credentials {
-		if s := sign.ValueString(v); len(s) > 8192 {
+	total := 0
+	for k, v := range credentials {
+		s := sign.ValueString(v)
+		if len(s) > 8192 {
 			return respond.NewError("PLUGIN_CREDENTIAL_TOO_LARGE", "平台凭据内容过大", 422)
 		}
+		total += len(k) + len(s)
+	}
+	if total > 64<<10 {
+		return respond.NewError("PLUGIN_CREDENTIAL_TOO_LARGE", "平台凭据总大小过大", 422)
+	}
+	return nil
+}
+
+const maxAccountSettingsBytes = 64 << 10
+
+func validateSettingsPayload(settings map[string]any) error {
+	encoded, err := marshalNoEscape(settings)
+	if err != nil {
+		return respond.NewError("VALIDATION_FAILED", "settings 无法序列化", 422)
+	}
+	if len(encoded) > maxAccountSettingsBytes {
+		return respond.NewError("VALIDATION_FAILED", "settings 内容过大", 422)
 	}
 	return nil
 }

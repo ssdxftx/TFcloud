@@ -3,10 +3,11 @@ package service
 import (
 	"crypto/hmac"
 	"crypto/md5"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"math/rand"
+	"math/big"
 	"strings"
 	"sync"
 	"time"
@@ -96,7 +97,13 @@ func (s *AuthService) hmacHex(value string) (string, error) {
 	return hex.EncodeToString(mac.Sum(nil)), nil
 }
 
-func randomCode() string { return fmt.Sprintf("%06d", 100000+rand.Intn(900000)) }
+func randomCode() string {
+	n, err := rand.Int(rand.Reader, big.NewInt(900000))
+	if err != nil {
+		panic("系统随机源不可用: " + err.Error())
+	}
+	return fmt.Sprintf("%06d", 100000+n.Int64())
+}
 
 // ---------- 认证 ----------
 
@@ -629,10 +636,19 @@ func (s *AuthService) ConsumeEmailCode(email, code, purpose string) error {
 		return err
 	}
 	if !hmac.Equal([]byte(row.CodeHash), []byte(hash)) {
-		_, _ = s.store.Write.Exec(`UPDATE TF_email_verification_codes SET attempts = attempts + 1 WHERE id = ?`, row.ID)
+		_, _ = s.store.Write.Exec(`UPDATE TF_email_verification_codes SET attempts = attempts + 1
+			WHERE id = ? AND consumed_at IS NULL`, row.ID)
 		return respond.NewError("VERIFICATION_CODE_INVALID", "验证码不正确，请检查后重试", 422)
 	}
-	_, _ = s.store.Write.Exec(`UPDATE TF_email_verification_codes SET consumed_at = ? WHERE id = ?`, database.Now(), row.ID)
+	// 原子标记已使用：并发提交同一个验证码时只允许一个请求成功。
+	res, err := s.store.Write.Exec(`UPDATE TF_email_verification_codes SET consumed_at = ?
+		WHERE id = ? AND consumed_at IS NULL`, database.Now(), row.ID)
+	if err != nil {
+		return respond.Internal("验证码状态更新失败")
+	}
+	if affected, _ := res.RowsAffected(); affected != 1 {
+		return respond.NewError("VERIFICATION_CODE_EXPIRED", "验证码已使用或已过期，请重新获取", 422)
+	}
 	return nil
 }
 
@@ -851,7 +867,8 @@ func (s *AuthService) confirmPasswordCode(userID int64, email, code, newPassword
 		invalidCode = "PASSWORD_RESET_INVALID"
 	}
 	if !hmac.Equal([]byte(row.CodeHash), []byte(hash)) || (email != "" && !strings.EqualFold(row.Email, email)) {
-		_, _ = s.store.Write.Exec(`UPDATE TF_password_change_codes SET attempts = attempts + 1 WHERE id = ?`, row.ID)
+		_, _ = s.store.Write.Exec(`UPDATE TF_password_change_codes SET attempts = attempts + 1
+			WHERE id = ? AND consumed_at IS NULL`, row.ID)
 		return respond.NewError(invalidCode, invalidMsg, 422)
 	}
 	newHash, err := secure.HashPassword(newPassword)
@@ -864,12 +881,17 @@ func (s *AuthService) confirmPasswordCode(userID int64, email, code, newPassword
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.Exec(`UPDATE TF_users SET password_hash=?, password_migrated_at=?, updated_at=? WHERE id=?`,
-		newHash, now, now, userID); err != nil {
+	// 先原子占用验证码，避免同一个验证码被并发使用两次。
+	res, err := tx.Exec(`UPDATE TF_password_change_codes SET consumed_at=?
+		WHERE id=? AND consumed_at IS NULL`, now, row.ID)
+	if err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`UPDATE TF_password_change_codes SET consumed_at=?
-		WHERE user_id=? AND purpose=? AND consumed_at IS NULL`, now, userID, purpose); err != nil {
+	if affected, _ := res.RowsAffected(); affected != 1 {
+		return respond.NewError("VERIFICATION_CODE_EXPIRED", "验证码已使用或已过期，请重新获取", 422)
+	}
+	if _, err := tx.Exec(`UPDATE TF_users SET password_hash=?, password_migrated_at=?, updated_at=? WHERE id=?`,
+		newHash, now, now, userID); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`UPDATE TF_sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL`, now, userID); err != nil {
@@ -924,25 +946,77 @@ func newChallengeStore() *challengeStore {
 	return &challengeStore{data: make(map[string]*challengeRecord)}
 }
 
+const maxChallenges = 20000
+
 func (c *challengeStore) put(id string, rec *challengeRecord) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if len(c.data) > 5000 {
+	if len(c.data) >= maxChallenges {
 		now := time.Now()
 		for k, v := range c.data {
 			if now.After(v.ExpiresAt) {
 				delete(c.data, k)
 			}
 		}
+		// 一次性淘汰约 10%，避免每新增一个挑战都全表扫描。
+		for k := range c.data {
+			delete(c.data, k)
+			if len(c.data) < maxChallenges*9/10 {
+				break
+			}
+		}
 	}
 	c.data[id] = rec
 }
 
-func (c *challengeStore) get(id string) (*challengeRecord, bool) {
+// snapshot 返回副本，避免调用方在锁外修改记录造成数据竞争。
+func (c *challengeStore) snapshot(id string) (challengeRecord, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	rec, ok := c.data[id]
-	return rec, ok
+	if !ok {
+		return challengeRecord{}, false
+	}
+	return *rec, true
+}
+
+func (c *challengeStore) markVerified(id string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	rec, ok := c.data[id]
+	if !ok {
+		return false
+	}
+	rec.VerifiedAt = time.Now()
+	return true
+}
+
+func (c *challengeStore) failAttempt(id string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	rec, ok := c.data[id]
+	if !ok {
+		return
+	}
+	rec.Attempts++
+	if rec.Attempts >= 5 {
+		delete(c.data, id)
+	}
+}
+
+func (c *challengeStore) consume(id, purpose, agentHash string, now time.Time) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	rec, ok := c.data[id]
+	if !ok {
+		return false
+	}
+	if rec.Purpose != purpose || rec.VerifiedAt.IsZero() ||
+		now.Sub(rec.VerifiedAt) > verifiedTTL || rec.AgentHash != agentHash {
+		return false
+	}
+	delete(c.data, id)
+	return true
 }
 
 func (c *challengeStore) remove(id string) {
@@ -982,7 +1056,7 @@ func (s *AuthService) IssueChallenge(purpose, ip, agent string) (map[string]any,
 // 强绑定会让正常用户反复失败；滑块的时间与交互次数校验 + 一次性 ID 已足以拦机器人。
 // IP 仍会记录在挑战里，供审计与风控排查。
 func (s *AuthService) VerifyChallenge(id string, elapsedMs, interactionCount int, ip, agent string) (map[string]any, error) {
-	rec, ok := s.challenge.get(id)
+	rec, ok := s.challenge.snapshot(id)
 	if !ok || time.Now().After(rec.ExpiresAt) ||
 		!hmac.Equal([]byte(rec.IDHash), []byte(secure.SHA256Hex(id))) ||
 		!hmac.Equal([]byte(rec.AgentHash), []byte(secure.SHA256Hex(agent))) {
@@ -993,13 +1067,12 @@ func (s *AuthService) VerifyChallenge(id string, elapsedMs, interactionCount int
 	valid := elapsedMs >= minInteractionMs && elapsedMs <= 120000 &&
 		serverElapsed >= minInteractionMs && interactionCount >= 2 && interactionCount <= 1000
 	if !valid {
-		rec.Attempts++
-		if rec.Attempts >= 5 {
-			s.challenge.remove(id)
-		}
+		s.challenge.failAttempt(id)
 		return nil, respond.NewError("HUMAN_CHALLENGE_INCOMPLETE", "请重新平稳滑动到最右侧", 422)
 	}
-	rec.VerifiedAt = time.Now()
+	if !s.challenge.markVerified(id) {
+		return nil, respond.NewError("HUMAN_CHALLENGE_EXPIRED", "验证已过期，请重试", 422)
+	}
 	return map[string]any{
 		"challenge_id": id,
 		"verified":     true,
@@ -1008,14 +1081,8 @@ func (s *AuthService) VerifyChallenge(id string, elapsedMs, interactionCount int
 }
 
 func (s *AuthService) ConsumeChallenge(id, purpose, ip, agent string) error {
-	rec, ok := s.challenge.get(id)
-	if !ok {
-		return respond.NewError("HUMAN_VERIFICATION_REQUIRED", "请先完成人机验证", 422)
-	}
-	s.challenge.remove(id)
-	if rec.Purpose != purpose || rec.VerifiedAt.IsZero() ||
-		time.Since(rec.VerifiedAt) > verifiedTTL ||
-		!hmac.Equal([]byte(rec.AgentHash), []byte(secure.SHA256Hex(agent))) {
+	// 校验与删除在同一个锁内完成，避免一个挑战被并发消费两次。
+	if !s.challenge.consume(id, purpose, secure.SHA256Hex(agent), time.Now()) {
 		return respond.NewError("HUMAN_VERIFICATION_REQUIRED", "请先完成人机验证", 422)
 	}
 	return nil

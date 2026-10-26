@@ -17,6 +17,8 @@ import (
 	"tfcloud/internal/secure"
 )
 
+const maxAssistantReplyBytes = 2 << 20
+
 type AssistantService struct {
 	store    *database.Store
 	cfg      *config.Config
@@ -169,6 +171,19 @@ func (s *AssistantService) begin(userID int64, input map[string]any) (map[string
 	if len([]rune(content)) > maxLen {
 		return nil, nil, nil, respond.NewError("ASSISTANT_MESSAGE_TOO_LONG",
 			fmt.Sprintf("单条消息不能超过 %d 个字符", maxLen), 422)
+	}
+	hourlyLimit := 30
+	if group := s.settings.Group("astrbot"); group != nil {
+		if v := asInt(group["hourly_message_limit"]); v > 0 {
+			hourlyLimit = v
+		}
+	}
+	var used int
+	_ = s.store.Read.Get(&used, `SELECT COUNT(1) FROM TF_astrbot_messages
+		WHERE user_id=? AND role='user' AND created_at >= ?`,
+		userID, database.Ts(time.Now().Add(-time.Hour)))
+	if used >= hourlyLimit {
+		return nil, nil, nil, respond.NewError("ASSISTANT_RATE_LIMITED", "消息发送过于频繁，请稍后再试", 429)
 	}
 	conv, err := s.conversation(userID)
 	if err != nil {
@@ -323,14 +338,18 @@ func (s *AssistantService) chatStream(ctx context.Context, baseURL, apiKey, conf
 
 	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
 	if !strings.Contains(contentType, "event-stream") {
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, maxAssistantReplyBytes))
 		text := extractReply(raw)
+		if len(text) > maxAssistantReplyBytes {
+			return fmt.Errorf("智能助手响应过大")
+		}
 		if text != "" {
 			onChunk(text)
 		}
 		return nil
 	}
 
+	total := 0
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	for scanner.Scan() {
@@ -343,6 +362,10 @@ func (s *AssistantService) chatStream(ctx context.Context, baseURL, apiKey, conf
 			continue
 		}
 		if chunk := s.extractChunk(payload); chunk != "" {
+			total += len(chunk)
+			if total > maxAssistantReplyBytes {
+				return fmt.Errorf("智能助手响应过大")
+			}
 			onChunk(chunk)
 		}
 	}

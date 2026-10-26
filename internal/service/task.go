@@ -988,10 +988,6 @@ func extendedAttemptLimit(attempts, current int) int {
 // ---------- 分页 ----------
 
 func paginate(filters map[string]any, defaultPerPage int) (page, perPage, offset int) {
-	page = asInt(filters["page"])
-	if page < 1 {
-		page = 1
-	}
 	perPage = asInt(filters["per_page"])
 	if perPage == 0 {
 		perPage = asInt(filters["limit"])
@@ -1000,6 +996,16 @@ func paginate(filters map[string]any, defaultPerPage int) (page, perPage, offset
 		perPage = defaultPerPage
 	}
 	perPage = clampInt(perPage, 1, 100)
+	// 前端部分列表使用 offset 分页，统一在这里兼容，避免忽略 offset 后永远返回第一页。
+	if raw := asInt(filters["offset"]); raw > 0 {
+		offset = raw
+		page = offset/perPage + 1
+		return
+	}
+	page = asInt(filters["page"])
+	if page < 1 {
+		page = 1
+	}
 	offset = (page - 1) * perPage
 	return
 }

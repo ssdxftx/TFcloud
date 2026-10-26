@@ -53,6 +53,10 @@ func (s *AuditService) List(filters map[string]any) (map[string]any, error) {
 		where = append(where, "user_id = ?")
 		args = append(args, userID)
 	}
+	if beforeID := asInt(filters["before_id"]); beforeID > 0 {
+		where = append(where, "id < ?")
+		args = append(args, beforeID)
+	}
 	clause := strings.Join(where, " AND ")
 	var total int
 	_ = s.store.Read.Get(&total, `SELECT COUNT(1) FROM TF_audit_logs WHERE `+clause, args...)

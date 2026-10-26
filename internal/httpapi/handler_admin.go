@@ -290,7 +290,9 @@ func (s *Server) adminAuditLogs(w http.ResponseWriter, r *http.Request) {
 		respond.Fail(w, r, err)
 		return
 	}
-	respond.OK(w, r, out)
+	// 前端按数组做游标追加，这里保持与旧接口一致的数组形状。
+	items, _ := out["items"].([]map[string]any)
+	respond.OK(w, r, items)
 }
 
 // ---------- 邮件 ----------
@@ -305,15 +307,8 @@ func (s *Server) adminMailSummary(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) adminMailTasks(w http.ResponseWriter, r *http.Request) {
-	page := intOf(query(r)["page"])
-	if page < 1 {
-		page = 1
-	}
-	limit := intOf(query(r)["per_page"])
-	if limit <= 0 {
-		limit = 20
-	}
-	out, err := s.Mail.Tasks(limit, (page-1)*limit)
+	limit, offset := listPaging(query(r), 20, 200)
+	out, err := s.Mail.Tasks(limit, offset)
 	if err != nil {
 		respond.Fail(w, r, err)
 		return
@@ -332,20 +327,38 @@ func (s *Server) adminMailTaskRecords(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) adminMailRecords(w http.ResponseWriter, r *http.Request) {
 	q := query(r)
-	page := intOf(q["page"])
-	if page < 1 {
-		page = 1
-	}
-	limit := intOf(q["per_page"])
-	if limit <= 0 {
-		limit = 20
-	}
-	out, err := s.Mail.AllRecords(strOf(q["keyword"]), strOf(q["status"]), limit, (page-1)*limit)
+	limit, offset := listPaging(q, 20, 200)
+	out, err := s.Mail.AllRecords(strOf(q["keyword"]), strOf(q["status"]), strOf(q["template_code"]), limit, offset)
 	if err != nil {
 		respond.Fail(w, r, err)
 		return
 	}
 	respond.OK(w, r, out)
+}
+
+// listPaging 同时兼容 page/per_page 与 limit/offset 两种分页参数。
+func listPaging(q map[string]any, defaultLimit, maxLimit int) (limit, offset int) {
+	limit = intOf(q["limit"])
+	if limit <= 0 {
+		limit = intOf(q["per_page"])
+	}
+	if limit <= 0 {
+		limit = defaultLimit
+	}
+	if limit > maxLimit {
+		limit = maxLimit
+	}
+	offset = intOf(q["offset"])
+	if offset < 0 {
+		offset = 0
+	}
+	if offset == 0 {
+		page := intOf(q["page"])
+		if page > 1 {
+			offset = (page - 1) * limit
+		}
+	}
+	return limit, offset
 }
 
 func (s *Server) adminMailRecordDelete(w http.ResponseWriter, r *http.Request) {

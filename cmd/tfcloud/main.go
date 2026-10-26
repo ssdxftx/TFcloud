@@ -162,6 +162,7 @@ func runServe() {
 		Addr:              a.cfg.HTTPAddr,
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,
 		IdleTimeout:       90 * time.Second,
 	}
 
@@ -237,12 +238,12 @@ func runAdmin(args []string) {
 	fs := flag.NewFlagSet("admin", flag.ExitOnError)
 	username := fs.String("username", "", "管理员用户名")
 	password := fs.String("password", "", "管理员密码（至少 8 位）")
-	_ = fs.Parse(args)
 	if len(args) == 0 {
 		usage()
 		os.Exit(2)
 	}
 	action := args[0]
+	_ = fs.Parse(args[1:])
 	a, err := bootstrap()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "初始化失败：%v\n", err)
