@@ -28,7 +28,7 @@ type AssistantService struct {
 
 func NewAssistant(store *database.Store, cfg *config.Config, settings *SettingsService) *AssistantService {
 	return &AssistantService{store: store, cfg: cfg, settings: settings,
-		client: &http.Client{Timeout: 120 * time.Second}}
+		client: &http.Client{}}
 }
 
 func (s *AssistantService) config() (enabled bool, baseURL, apiKey, configID, botName, welcome string, maxLen int, timeout int) {
@@ -71,20 +71,22 @@ func (s *AssistantService) conversation(userID int64) (map[string]any, error) {
 		ConversationNo   string `db:"conversation_no"`
 		AstrbotSessionID string `db:"astrbot_session_id"`
 	}
-	err := s.store.Read.Get(&conv, `SELECT id, conversation_no, astrbot_session_id FROM TF_astrbot_conversations WHERE user_id=?`, userID)
-	if err == nil {
+	query := `SELECT id, conversation_no, astrbot_session_id FROM TF_astrbot_conversations WHERE user_id=?`
+	if err := s.store.Read.Get(&conv, query, userID); err == nil {
 		return map[string]any{"id": conv.ID, "conversation_no": conv.ConversationNo, "session_id": conv.AstrbotSessionID}, nil
 	}
 	now := database.Now()
 	sessionID := secure.RandomHex(16)
-	res, err := s.store.Write.Exec(`INSERT INTO TF_astrbot_conversations
+	if _, err := s.store.Write.Exec(`INSERT INTO TF_astrbot_conversations
 		(conversation_no, user_id, astrbot_session_id, last_message_at, created_at, updated_at)
-		VALUES(?,?,?,NULL,?,?)`, secure.RandomHex(16), userID, sessionID, now, now)
-	if err != nil {
+		VALUES(?,?,?,NULL,?,?) ON CONFLICT(user_id) DO NOTHING`,
+		secure.RandomHex(16), userID, sessionID, now, now); err != nil {
 		return nil, respond.Internal("创建会话失败")
 	}
-	id, _ := res.LastInsertId()
-	return map[string]any{"id": id, "session_id": sessionID}, nil
+	if err := s.store.Read.Get(&conv, query, userID); err != nil {
+		return nil, respond.Internal("创建会话失败")
+	}
+	return map[string]any{"id": conv.ID, "conversation_no": conv.ConversationNo, "session_id": conv.AstrbotSessionID}, nil
 }
 
 func (s *AssistantService) History(userID int64, filters map[string]any) (map[string]any, error) {
@@ -107,7 +109,7 @@ func (s *AssistantService) History(userID int64, filters map[string]any) (map[st
 			item["error"] = map[string]any{"code": item["error_code"], "message": item["error_message"]}
 		}
 	}
-	return pageResult(items, total, page, perPage), nil
+	return pageResult(items, total, page, perPage, offset), nil
 }
 
 func (s *AssistantService) Reset(userID int64) error {
@@ -159,6 +161,18 @@ func (s *AssistantService) update(id int64, content, status string, errCode, err
 		WHERE id=?`, content, status, nullableString(errCode), nullableString(errMessage), database.Now(), id)
 }
 
+// consumeMessageQuota 用独立计数表限流，清空会话历史不会绕过限制。
+func (s *AssistantService) consumeMessageQuota(userID int64, limit int) (bool, error) {
+	window := time.Now().Truncate(time.Hour).Format(database.TimeLayout)
+	var used int
+	if err := s.store.Write.Get(&used, `INSERT INTO TF_astrbot_rate_limits(user_id, window_start, used)
+		VALUES(?,?,1) ON CONFLICT(user_id, window_start) DO UPDATE SET used = used + 1
+		RETURNING used`, userID, window); err != nil {
+		return false, err
+	}
+	return used <= limit, nil
+}
+
 func (s *AssistantService) begin(userID int64, input map[string]any) (map[string]any, *assistantMessage, *assistantMessage, error) {
 	enabled, baseURL, apiKey, _, _, _, maxLen, _ := s.config()
 	if !enabled || baseURL == "" || apiKey == "" {
@@ -178,11 +192,11 @@ func (s *AssistantService) begin(userID int64, input map[string]any) (map[string
 			hourlyLimit = v
 		}
 	}
-	var used int
-	_ = s.store.Read.Get(&used, `SELECT COUNT(1) FROM TF_astrbot_messages
-		WHERE user_id=? AND role='user' AND created_at >= ?`,
-		userID, database.Ts(time.Now().Add(-time.Hour)))
-	if used >= hourlyLimit {
+	allowed, err := s.consumeMessageQuota(userID, hourlyLimit)
+	if err != nil {
+		return nil, nil, nil, respond.Internal("消息限流检查失败")
+	}
+	if !allowed {
 		return nil, nil, nil, respond.NewError("ASSISTANT_RATE_LIMITED", "消息发送过于频繁，请稍后再试", 429)
 	}
 	conv, err := s.conversation(userID)

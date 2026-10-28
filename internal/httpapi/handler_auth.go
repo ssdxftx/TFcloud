@@ -28,7 +28,11 @@ func (s *Server) healthReady(w http.ResponseWriter, r *http.Request) {
 
 // qqVerification 返回域名校验文件内容，未配置时返回 404。
 func (s *Server) qqVerification(w http.ResponseWriter, r *http.Request) {
-	group := s.Settings.Group("site")
+	group, err := s.Settings.GroupWithSecrets("site")
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
 	content := strings.TrimSpace(strValue(group["qq_relay_verification_content"]))
 	if content == "" {
 		http.NotFound(w, r)
@@ -379,7 +383,7 @@ func (s *Server) setSessionCookie(w http.ResponseWriter, token string) {
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   s.Cfg.SessionSecure,
+		Secure:   s.Cfg.SessionSecureEnabled(),
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   s.sessionMaxAge(),
 	})
@@ -391,7 +395,7 @@ func (s *Server) clearSessionCookie(w http.ResponseWriter) {
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   s.Cfg.SessionSecure,
+		Secure:   s.Cfg.SessionSecureEnabled(),
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})

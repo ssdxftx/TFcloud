@@ -51,19 +51,25 @@ func (p *Cloud189) CredentialRules() []sign.CredentialRule {
 func (p *Cloud189) SupportedActions() []string { return []string{"daily_sign"} }
 
 func (p *Cloud189) ValidateAccount(creds map[string]any) (*sign.Profile, error) {
+	profile, _, err := p.ValidateAccountWithRefresh(creds)
+	return profile, err
+}
+
+func (p *Cloud189) ValidateAccountWithRefresh(creds map[string]any) (*sign.Profile, map[string]any, error) {
 	c := &cloud189Client{http: p.http, creds: cloneMap(creds)}
 	session, err := c.authenticate(context.Background())
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return &sign.Profile{
+	profile := &sign.Profile{
 		ExternalID:  c.accountIdentifier(),
 		DisplayName: "天翼云盘",
 		Extra: map[string]any{
 			"login_name": c.maskedLoginName(session),
 			"provider":   "天翼云盘",
 		},
-	}, nil
+	}
+	return profile, c.refreshed(), nil
 }
 
 func (p *Cloud189) Execute(ctx context.Context, c *sign.Context) (*sign.Result, error) {

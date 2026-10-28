@@ -16,7 +16,6 @@ import (
 // 分组与路径顺序严格对齐 PHP 版 config/route.php，前端无需任何改动。
 func (s *Server) Router(static http.Handler) http.Handler {
 	r := chi.NewRouter()
-	r.Use(chimw.RealIP)
 	r.Use(middleware.RequestID())
 	r.Use(middleware.SecurityHeaders)
 	r.Use(s.mw().Recover)
@@ -186,7 +185,7 @@ func (s *Server) mw() *middleware.Middleware {
 	return &middleware.Middleware{
 		Auth:      s.Auth,
 		Installed: s.Cfg.IsInstalled,
-		CORS:      func() []string { return s.Cfg.CORSAllowedOrigins },
+		CORS:      func() []string { return s.Cfg.AllowedOrigins() },
 		Logger:    s.Logger,
 	}
 }

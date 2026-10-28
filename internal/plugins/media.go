@@ -256,17 +256,24 @@ func (c *iqiyiClient) signature(data map[string]string, key string, sorted bool)
 	return md5Hex(text.String() + key)
 }
 
+var iqiyiVIPFieldOrder = []string{
+	"agentType", "agentversion", "appKey", "authCookie", "qyid", "task_code", "timestamp", "typeCode", "userId",
+}
+
+var iqiyiScoreFieldOrder = []string{
+	"agenttype", "agentversion", "appKey", "appver", "authCookie", "channelCode", "scoreType", "srcplatform",
+	"typeCode", "userId", "user_agent", "verticalCode",
+}
+
 func iqiyiFieldOrder(data map[string]string) []string {
-	preferred := []string{
-		"agentType", "agentversion", "appKey", "authCookie", "qyid", "task_code", "timestamp", "typeCode", "userId",
-		"agenttype", "appver", "channelCode", "scoreType", "srcplatform", "user_agent", "verticalCode",
+	order := iqiyiVIPFieldOrder
+	if _, ok := data["agenttype"]; ok {
+		order = iqiyiScoreFieldOrder
 	}
-	seen := map[string]bool{}
 	var out []string
-	for _, k := range preferred {
+	for _, k := range order {
 		if _, ok := data[k]; ok {
 			out = append(out, k)
-			seen[k] = true
 		}
 	}
 	return out
@@ -403,6 +410,12 @@ func (c *iqiyiClient) scoreSign(ctx context.Context, accountID int64) sign.Recor
 		rec.Status = "already_done"
 	default:
 		rec.Status = "failed"
+	}
+	if outer == "A00401" {
+		rec.Status = "failed"
+		rec.Code = "PLUGIN_CREDENTIAL_EXPIRED"
+		rec.Message = "爱奇艺登录状态已经失效"
+		return rec
 	}
 	rec.Code = code
 	rec.Message = firstText(first["message"], resp.JSON["message"], map[bool]string{true: "积分签到成功", false: "积分签到失败"}[rec.Status == "succeeded"])

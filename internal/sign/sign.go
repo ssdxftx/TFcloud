@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -132,9 +133,10 @@ type Plugin interface {
 	Execute(ctx context.Context, c *Context) (*Result, error)
 }
 
-// RefreshAware 由需要刷新令牌的插件实现（天翼云盘/小米运动/哔咔）。
-type RefreshAware interface {
-	RefreshedCredentials() map[string]any
+// RefreshingValidator 在验证账号时一并返回刷新后的凭据（天翼云盘/小米运动/哔咔）。
+// 通过返回值传递刷新结果，避免在共享插件实例上保存请求级状态。
+type RefreshingValidator interface {
+	ValidateAccountWithRefresh(creds map[string]any) (*Profile, map[string]any, error)
 }
 
 type Registry struct {
@@ -257,17 +259,18 @@ func (h *HTTP) Do(ctx context.Context, method, target string, opts RequestOption
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, Fail("UPSTREAM_REQUEST_FAILED", "访问上游服务失败："+sanitize(err.Error()), 502)
+		return nil, Fail("UPSTREAM_REQUEST_FAILED", "访问上游服务失败："+sanitize(transportError(err)), 502)
 	}
 	defer resp.Body.Close()
 
 	var reader io.Reader = resp.Body
 	if strings.Contains(strings.ToLower(resp.Header.Get("Content-Encoding")), "gzip") {
 		gz, err := gzip.NewReader(resp.Body)
-		if err == nil {
-			defer gz.Close()
-			reader = gz
+		if err != nil {
+			return nil, Fail("UPSTREAM_REQUEST_FAILED", "读取上游响应失败", 502)
 		}
+		defer gz.Close()
+		reader = gz
 	}
 	raw, err := io.ReadAll(io.LimitReader(reader, 8<<20))
 	if err != nil {
@@ -407,4 +410,16 @@ func SignedParams(params map[string]string, suffix string) string {
 func sanitize(v string) string {
 	r := strings.NewReplacer("\n", " ", "\r", " ")
 	return r.Replace(v)
+}
+
+// transportError 去掉 *url.Error 携带的完整请求 URL，避免查询参数中的令牌落进错误信息。
+func transportError(err error) string {
+	for {
+		var urlErr *url.Error
+		if !errors.As(err, &urlErr) || urlErr.Err == nil {
+			break
+		}
+		err = urlErr.Err
+	}
+	return err.Error()
 }

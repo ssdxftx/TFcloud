@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -14,6 +15,8 @@ import (
 // Config 是进程内唯一配置源。环境变量名与 PHP 版保持一致，
 // 只是把 DB_* 换成 DATA_DIR/SQLITE_PATH，运维迁移成本最低。
 type Config struct {
+	mu sync.RWMutex
+
 	AppEnv   string
 	HTTPAddr string
 
@@ -98,15 +101,48 @@ func (c *Config) IsInstalled() bool {
 	if _, err := os.Stat(c.InstalledMarker()); err != nil {
 		return false
 	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.AppKey != "" && c.FingerprintKey != ""
 }
 
+// Reload 只热更新安装向导会改动、且运行期会被并发读取的字段。
+// 其余配置（Worker 数量、调度间隔等）在进程启动时已固化，改 .env 后需要重启才生效。
 func (c *Config) Reload() {
 	fresh, err := Load()
 	if err != nil {
 		return
 	}
-	*c = *fresh
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.AppKey = fresh.AppKey
+	c.FingerprintKey = fresh.FingerprintKey
+	c.SessionSecure = fresh.SessionSecure
+	c.CORSAllowedOrigins = fresh.CORSAllowedOrigins
+}
+
+func (c *Config) SecretKey() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.AppKey
+}
+
+func (c *Config) FingerprintSecret() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.FingerprintKey
+}
+
+func (c *Config) SessionSecureEnabled() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.SessionSecure
+}
+
+func (c *Config) AllowedOrigins() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.CORSAllowedOrigins
 }
 
 func defaultDataDir() string {

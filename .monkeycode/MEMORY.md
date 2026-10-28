@@ -37,6 +37,7 @@ Entries discovered by the Agent during task execution should follow this format:
 - Instructions:
   - Use git user.name `ssdxftx` and user.email `1763610087@qq.com` for commits and pushes in this project and globally.
   - Never append `Co-authored-by: monkeycode-ai <monkeycode-ai@chaitin.com>` or any monkeycode-ai co-author trailer to commit messages.
+  - The trailer was injected by `.git/hooks/prepare-commit-msg` reading `coauthor.*` git config; both the config section and the hook have been removed/disabled for this repo.
 
 [User Instruction Summary]
 - Date: 2026-10-26

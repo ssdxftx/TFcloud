@@ -41,6 +41,7 @@ export default function ProfilePage () {
 
   const emailChanged = Boolean(user?.email)
     && profile.email.trim().toLowerCase() !== (user?.email || '').trim().toLowerCase();
+  const emailCodeRequired = Boolean(site.mail_enabled) && emailChanged;
 
   useEffect(() => {
     if (!user) return;
@@ -101,7 +102,7 @@ export default function ProfilePage () {
 
   const saveProfile = async (event: FormEvent) => {
     event.preventDefault();
-    if (emailChanged && !/^\d{6}$/.test(currentEmailCode.trim())) {
+    if (emailCodeRequired && !/^\d{6}$/.test(currentEmailCode.trim())) {
       toast.error('更换邮箱前，请输入原邮箱收到的6位验证码');
       return;
     }
@@ -112,7 +113,7 @@ export default function ProfilePage () {
         url: '/me',
         data: {
           ...profile,
-          ...(emailChanged ? { current_email_code: currentEmailCode.trim() } : {}),
+          ...(emailCodeRequired ? { current_email_code: currentEmailCode.trim() } : {}),
         },
       });
       await refreshUser();
@@ -199,8 +200,8 @@ export default function ProfilePage () {
         method: 'POST',
         url: '/me/password',
         data: {
-          verification_code: passwords.verification_code,
-          new_password: passwords.new_password,
+          code: passwords.verification_code,
+          password: passwords.new_password,
         },
       });
       try { await logout(); } catch { /* 服务端已经撤销全部会话 */ }
@@ -340,7 +341,12 @@ export default function ProfilePage () {
                   setCurrentEmailCode('');
                 }}
               />
-              {emailChanged && (
+              {emailChanged && !site.mail_enabled && (
+                <div className='rounded-2xl border border-divider bg-content1/50 p-4 text-xs leading-5 text-default-500'>
+                  邮件服务未启用，修改邮箱无需原邮箱验证码。
+                </div>
+              )}
+              {emailCodeRequired && (
                 <div className='rounded-2xl border border-warning/30 bg-warning/10 p-4'>
                   <p className='text-sm font-medium text-warning-700 dark:text-warning-300'>更换邮箱需验证原邮箱</p>
                   <p className='mt-1 text-xs leading-5 text-default-500'>
@@ -375,7 +381,7 @@ export default function ProfilePage () {
                 <div><p className='text-sm font-medium'>每日签到邮件</p><p className='mt-1 text-xs leading-5 text-default-400'>每天汇总当天任务完成、失败和等待状态，默认关闭</p></div>
                 <Switch aria-label='每日签到邮件' isSelected={profile.daily_sign_email} onValueChange={(value) => setProfile((current) => ({ ...current, daily_sign_email: value }))} />
               </div>
-              <Button type='submit' color='primary' isLoading={saving} isDisabled={emailChanged && currentEmailCode.length !== 6}>保存联系方式</Button>
+              <Button type='submit' color='primary' isLoading={saving} isDisabled={emailCodeRequired && currentEmailCode.length !== 6}>保存联系方式</Button>
             </form>
           </CardBody>
         </Card>

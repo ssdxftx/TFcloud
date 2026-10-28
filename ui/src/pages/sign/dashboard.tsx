@@ -38,7 +38,7 @@ export default function DashboardPage () {
   }, []);
 
   const todayDone = useMemo(
-    () => tasks.filter((task) => ['succeeded', 'completed', 'already_done'].includes(task.status)).length,
+    () => tasks.filter((task) => ['succeeded', 'completed', 'partial', 'already_done'].includes(task.status)).length,
     [tasks]
   );
   const expiredAccounts = accounts.filter((account) => account.login_status === 'expired' || account.status === 'credential_expired'

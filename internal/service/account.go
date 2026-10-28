@@ -143,15 +143,18 @@ func (s *AccountService) Create(userID int64, input map[string]any) (map[string]
 		return nil, err
 	}
 
-	profile, err := plugin.ValidateAccount(credentials)
-	if err != nil {
-		return nil, toAPIError(err)
-	}
-	// 插件在登录过程中可能刷新令牌（天翼云盘/小米运动/哔咔），此处合并回写。
-	if aware, ok := plugin.(sign.RefreshAware); ok {
-		if refreshed := aware.RefreshedCredentials(); refreshed != nil {
+	var profile *sign.Profile
+	if refreshing, ok := plugin.(sign.RefreshingValidator); ok {
+		var refreshed map[string]any
+		profile, refreshed, err = refreshing.ValidateAccountWithRefresh(credentials)
+		if err == nil && refreshed != nil {
 			credentials = mergeMaps(credentials, refreshed)
 		}
+	} else {
+		profile, err = plugin.ValidateAccount(credentials)
+	}
+	if err != nil {
+		return nil, toAPIError(err)
 	}
 	if err := validateSettings(pluginCode, settingsMap); err != nil {
 		return nil, err
@@ -207,83 +210,122 @@ func (s *AccountService) Update(userID, accountID int64, input map[string]any) (
 		return nil, err
 	}
 	now := database.Now()
+	seed := acc.PluginCode + ":" + strconv.FormatInt(userID, 10) + ":" + strconv.FormatInt(accountID, 10)
 
+	var displayName *string
 	if raw, ok := input["display_name"]; ok {
 		name := truncate(strings.TrimSpace(str(raw)), 191)
-		if _, err := s.store.Write.Exec(`UPDATE TF_plugin_accounts SET display_name=?, updated_at=? WHERE id=?`, name, now, accountID); err != nil {
-			return nil, err
-		}
+		displayName = &name
 	}
+
+	var status *string
 	if raw, ok := input["status"]; ok {
-		status := strings.TrimSpace(str(raw))
-		if !contains([]string{"active", "disabled", "pending_verification", "credential_expired"}, status) {
+		value := strings.TrimSpace(str(raw))
+		if !contains([]string{"active", "disabled", "pending_verification", "credential_expired"}, value) {
 			return nil, respond.NewError("VALIDATION_FAILED", "账号状态无效", 422)
 		}
-		nextRunAt := acc.NextRunAt
-		if status != "active" && status != "pending_verification" {
-			nextRunAt = nil
-		}
-		if _, err := s.store.Write.Exec(`UPDATE TF_plugin_accounts SET status=?, next_run_at=?, updated_at=? WHERE id=?`,
-			status, nextRunAt, now, accountID); err != nil {
-			return nil, err
-		}
+		status = &value
 	}
+
+	var settingsMap map[string]any
+	var settingsJSON *string
 	if raw, ok := input["settings"]; ok && raw != nil {
-		settingsMap, isMap := raw.(map[string]any)
+		value, isMap := raw.(map[string]any)
 		if !isMap {
 			return nil, respond.NewError("VALIDATION_FAILED", "settings 必须是对象", 422)
 		}
-		if err := validateSettingsPayload(settingsMap); err != nil {
+		if err := validateSettingsPayload(value); err != nil {
 			return nil, err
 		}
-		if err := validateSettings(acc.PluginCode, settingsMap); err != nil {
+		if err := validateSettings(acc.PluginCode, value); err != nil {
 			return nil, err
 		}
-		next := nextSchedule(normalizeLegacySettings(settingsMap, acc.NextRunAt), acc.PluginCode+":"+strconv.FormatInt(userID, 10)+":"+strconv.FormatInt(accountID, 10))
-		if _, err := s.store.Write.Exec(`UPDATE TF_plugin_accounts SET settings_json=?, next_run_at=?, updated_at=? WHERE id=?`,
-			mustJSON(settingsMap), nullableString(next), now, accountID); err != nil {
-			return nil, err
-		}
+		encoded := mustJSON(value)
+		settingsMap = value
+		settingsJSON = &encoded
 	}
+
+	var credentials map[string]any
+	var profile *sign.Profile
 	if raw, ok := input["credentials"]; ok && raw != nil {
-		credentials, isMap := raw.(map[string]any)
-		if !isMap || len(credentials) == 0 {
+		value, isMap := raw.(map[string]any)
+		if !isMap || len(value) == 0 {
 			return nil, respond.NewError("VALIDATION_FAILED", "credentials 必须是对象", 422)
 		}
 		plugin, err := s.registry.Get(acc.PluginCode)
 		if err != nil {
 			return nil, toAPIError(err)
 		}
-		if err := assertCredentialShape(plugin, credentials); err != nil {
+		if err := assertCredentialShape(plugin, value); err != nil {
 			return nil, err
 		}
-		profile, err := plugin.ValidateAccount(credentials)
+		if refreshing, ok := plugin.(sign.RefreshingValidator); ok {
+			var refreshed map[string]any
+			profile, refreshed, err = refreshing.ValidateAccountWithRefresh(value)
+			if err == nil && refreshed != nil {
+				value = mergeMaps(value, refreshed)
+			}
+		} else {
+			profile, err = plugin.ValidateAccount(value)
+		}
 		if err != nil {
 			return nil, toAPIError(err)
 		}
-		if aware, ok := plugin.(sign.RefreshAware); ok {
-			if refreshed := aware.RefreshedCredentials(); refreshed != nil {
-				credentials = mergeMaps(credentials, refreshed)
-			}
-		}
-		tx, err := s.store.Write.Beginx()
-		if err != nil {
+		credentials = value
+	}
+
+	tx, err := s.store.Write.Beginx()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if displayName != nil {
+		if _, err := tx.Exec(`UPDATE TF_plugin_accounts SET display_name=?, updated_at=? WHERE id=?`, *displayName, now, accountID); err != nil {
 			return nil, err
 		}
-		defer func() { _ = tx.Rollback() }()
+	}
+	if status != nil {
+		var nextRunAt any
+		if *status == "active" || *status == "pending_verification" {
+			settings := normalizeLegacySettings(unmarshalMap(acc.SettingsJSON), acc.NextRunAt)
+			nextRunAt = nullableString(nextSchedule(settings, seed))
+		}
+		if _, err := tx.Exec(`UPDATE TF_plugin_accounts SET status=?, next_run_at=?, updated_at=? WHERE id=?`,
+			*status, nextRunAt, now, accountID); err != nil {
+			return nil, err
+		}
+	}
+	if settingsJSON != nil {
+		next := nextSchedule(normalizeLegacySettings(settingsMap, acc.NextRunAt), seed)
+		if _, err := tx.Exec(`UPDATE TF_plugin_accounts SET settings_json=?, next_run_at=?, updated_at=? WHERE id=?`,
+			*settingsJSON, nullableString(next), now, accountID); err != nil {
+			return nil, err
+		}
+	}
+	if credentials != nil {
 		if err := s.writeCredential(tx, acc.PluginCode, accountID, credentials); err != nil {
 			return nil, err
 		}
 		profileJSON := mustJSON(mergeMaps(profile.Extra, map[string]any{"display_name": profile.DisplayName}))
+		effectiveSettings := unmarshalMap(acc.SettingsJSON)
+		if settingsMap != nil {
+			effectiveSettings = settingsMap
+		}
+		normalized := normalizeLegacySettings(effectiveSettings, acc.NextRunAt)
+		nextRunCandidate := nullableString(nextSchedule(normalized, seed))
 		if _, err := tx.Exec(`UPDATE TF_plugin_accounts SET status='active', last_verified_at=?, last_error_code=NULL,
 			last_error_message=NULL, display_name=CASE WHEN display_name='' THEN ? ELSE display_name END,
-			external_user_id=?, profile_json=?, updated_at=? WHERE id=?`,
-			now, truncate(profile.DisplayName, 191), nullableString(profile.ExternalID), profileJSON, now, accountID); err != nil {
+			external_user_id=?, profile_json=?,
+			next_run_at=CASE WHEN next_run_at IS NULL OR next_run_at <= ? THEN ? ELSE next_run_at END,
+			updated_at=? WHERE id=?`,
+			now, truncate(profile.DisplayName, 191), nullableString(profile.ExternalID), profileJSON,
+			now, nextRunCandidate, now, accountID); err != nil {
 			return nil, err
 		}
-		if err := tx.Commit(); err != nil {
-			return nil, err
-		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
 	}
 	return s.Get(userID, accountID)
 }
@@ -298,6 +340,10 @@ func (s *AccountService) Delete(userID, accountID int64) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`UPDATE TF_sign_tasks SET status='cancelled', finished_at=?, updated_at=?
+		WHERE account_id=? AND status IN ('pending','retrying')`, now, now, accountID); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(`UPDATE TF_plugin_accounts SET deleted_at=?, status='disabled', next_run_at=NULL, updated_at=?
 		WHERE id=?`, now, now, accountID); err != nil {
 		return err
@@ -318,7 +364,7 @@ func credentialType(types []string) string {
 }
 
 func (s *AccountService) writeCredential(tx *sqlx.Tx, pluginCode string, accountID int64, credentials map[string]any) error {
-	key, err := secure.DecodeKey(s.cfg.AppKey)
+	key, err := secure.DecodeKey(s.cfg.SecretKey())
 	if err != nil {
 		return respond.NewError("APP_KEY_MISSING", "应用密钥未配置", 500)
 	}
@@ -335,7 +381,7 @@ func (s *AccountService) writeCredential(tx *sqlx.Tx, pluginCode string, account
 	if err != nil {
 		return respond.Internal("凭据加密失败")
 	}
-	fingerprint, err := secure.Fingerprint(s.cfg.FingerprintKey, credentials)
+	fingerprint, err := secure.Fingerprint(s.cfg.FingerprintSecret(), credentials)
 	if err != nil {
 		return respond.NewError("CREDENTIAL_KEY_MISSING", "凭据指纹密钥尚未配置", 500)
 	}
@@ -360,7 +406,7 @@ func (s *AccountService) DecryptedCredential(acc *model.PluginAccount) (map[stri
 		acc.ID); err != nil {
 		return nil, respond.NewError("PLUGIN_CREDENTIAL_MISSING", "平台凭据缺失，请重新授权", 409)
 	}
-	key, err := secure.DecodeKey(s.cfg.AppKey)
+	key, err := secure.DecodeKey(s.cfg.SecretKey())
 	if err != nil {
 		return nil, respond.NewError("APP_KEY_MISSING", "应用密钥未配置", 500)
 	}
@@ -496,6 +542,9 @@ func validateSettings(pluginCode string, settings map[string]any) error {
 		value := strings.TrimSpace(str(mode))
 		if value != "auto" && value != "fixed" {
 			return respond.NewError("VALIDATION_FAILED", "schedule_mode 必须是 auto 或 fixed", 422)
+		}
+		if value == "fixed" && !scheduleTimePattern.MatchString(strings.TrimSpace(str(settings["schedule_time"]))) {
+			return respond.NewError("SCHEDULE_TIME_INVALID", "固定计划必须填写 HH:MM 格式的执行时间", 422)
 		}
 	}
 	if t, ok := settings["schedule_time"]; ok && strings.TrimSpace(str(t)) != "" {

@@ -6,10 +6,16 @@ import { useEffect, useMemo, useState } from 'react';
 import { LuChevronLeft, LuChevronRight } from 'react-icons/lu';
 
 import { apiRequest } from '@/api/client';
+import { useSite } from '@/contexts/site';
 import type { SignCalendar, SignCalendarDay } from '@/types/sign';
 
 function monthKey (date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function localToday (): string {
+  const date = new Date();
+  return `${monthKey(date)}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
 function shiftMonth (month: string, offset: number): string {
@@ -28,7 +34,9 @@ function dayTone (day: SignCalendarDay | undefined, isFuture: boolean): { classN
 }
 
 export default function SignCalendarCard () {
-  const currentMonth = monthKey(new Date());
+  const site = useSite();
+  const todayString = site.today || localToday();
+  const currentMonth = todayString.slice(0, 7);
   const [month, setMonth] = useState(currentMonth);
   const [data, setData] = useState<SignCalendar | null>(null);
   const [loading, setLoading] = useState(true);
@@ -54,9 +62,6 @@ export default function SignCalendarCard () {
     const map = new Map((data?.days ?? []).map((day) => [day.date, day]));
     return { cells: list, dayMap: map };
   }, [month, data]);
-
-  const todayKey = new Date();
-  const todayString = `${monthKey(todayKey)}-${String(todayKey.getDate()).padStart(2, '0')}`;
 
   return (
     <Card className='tf-glass-card h-full rounded-[26px]'>

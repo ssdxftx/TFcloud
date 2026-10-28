@@ -14,7 +14,7 @@ const labels: Record<string, string> = {
   running: "执行中",
   succeeded: "成功",
   already_done: "已完成",
-  partial: "任务完成",
+  partial: "部分完成",
   failed: "失败",
   cancelled: "已取消",
   skipped: "已跳过",
@@ -29,7 +29,7 @@ const labels: Record<string, string> = {
 function statusColor(
   status: string,
 ): "default" | "primary" | "secondary" | "success" | "warning" | "danger" {
-  if (["active", "succeeded", "already_done", "completed", "ready", "enabled", "normal", "partial"].includes(status))
+  if (["active", "succeeded", "already_done", "completed", "ready", "enabled", "normal"].includes(status))
     return "success";
   if (
     [
@@ -37,6 +37,7 @@ function statusColor(
       "retrying",
       "pending_verification",
       "sending",
+      "partial",
     ].includes(status)
   )
     return "warning";

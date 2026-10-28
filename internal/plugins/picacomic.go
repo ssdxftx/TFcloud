@@ -41,17 +41,23 @@ func (p *Picacomic) CredentialRules() []sign.CredentialRule {
 func (p *Picacomic) SupportedActions() []string { return []string{"daily_sign"} }
 
 func (p *Picacomic) ValidateAccount(creds map[string]any) (*sign.Profile, error) {
+	profile, _, err := p.ValidateAccountWithRefresh(creds)
+	return profile, err
+}
+
+func (p *Picacomic) ValidateAccountWithRefresh(creds map[string]any) (*sign.Profile, map[string]any, error) {
 	c := &picaClient{http: p.http, creds: cloneMap(creds)}
 	session, err := c.authenticate(context.Background())
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	profile := sign.Map(session["profile"])
-	return &sign.Profile{
+	out := &sign.Profile{
 		ExternalID:  c.accountIdentifier(session),
 		DisplayName: firstText(profile["name"], "哔咔漫画账号"),
 		Extra:       map[string]any{"level": sign.ValueInt(profile["level"])},
-	}, nil
+	}
+	return out, c.refreshed(), nil
 }
 
 func (p *Picacomic) Execute(ctx context.Context, c *sign.Context) (*sign.Result, error) {

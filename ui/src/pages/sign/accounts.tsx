@@ -501,17 +501,21 @@ export default function AccountsPage () {
         });
         toast.success('账号设置已更新');
       } else if (form.method === 'password') {
-        const result = await apiRequest<PlatformAuthResult>({
-          method: 'POST', url: `/platform-auth/${form.platform_code}/password`,
-          data: {
-            username: form.username, password: form.password, login_type: form.login_type,
-            flow_no: authResult?.flow_no, captcha: form.captcha, security_code: form.security_code,
-          },
-        });
-        if (result.status !== 'succeeded' || !result.account) { setAuthResult(result); return; }
         if (renewing) {
-          toast.success(`${result.account.display_name} 登录凭据已更新，自动签到已恢复`);
+          const account = await apiRequest<PluginAccount>({
+            method: 'PATCH', url: `/plugin-accounts/${renewing.id}`,
+            data: { credentials: { username: form.username, password: form.password } },
+          });
+          toast.success(`${account.display_name || renewing.display_name || '账号'} 登录凭据已更新，自动签到已恢复`);
         } else {
+          const result = await apiRequest<PlatformAuthResult>({
+            method: 'POST', url: `/platform-auth/${form.platform_code}/password`,
+            data: {
+              username: form.username, password: form.password, login_type: form.login_type,
+              flow_no: authResult?.flow_no, captcha: form.captcha, security_code: form.security_code,
+            },
+          });
+          if (result.status !== 'succeeded' || !result.account) { setAuthResult(result); return; }
           await applySchedule(result.account);
           toast.success(`${result.account.display_name} 已添加`);
         }

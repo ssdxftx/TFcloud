@@ -180,12 +180,10 @@ export default function AdminMailPage() {
   };
   const showRecords = async (task: MailTask) => {
     try {
-      setRecords({
-        task,
-        rows: await apiRequest<MailRecord[]>({
-          url: `/admin/mail/tasks/${task.task_no}/records`,
-        }),
+      const result = await apiRequest<{ items: MailRecord[] }>({
+        url: `/admin/mail/tasks/${task.task_no}/records`,
       });
+      setRecords({ task, rows: result.items });
     } catch (error) {
       toast.error(errorMessage(error));
     }

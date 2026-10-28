@@ -179,7 +179,7 @@ func (m *Middleware) InstallGuard(next http.Handler) http.Handler {
 		// 页面请求一律交给前端：SPA 会自行检测安装状态并跳到 /install。
 		// 否则用户直接打开域名根路径只能看到一段 JSON，体验很差。
 		if !strings.HasPrefix(p, "/api/") ||
-			strings.HasPrefix(p, "/api/install") ||
+			p == "/api/install" || strings.HasPrefix(p, "/api/install/") ||
 			p == "/api/site" || // 登录/安装页都要读站点名与 Logo
 			strings.HasPrefix(p, "/health") {
 			next.ServeHTTP(w, r)
@@ -223,10 +223,18 @@ func (m *Middleware) AdminRequired(next http.Handler) http.Handler {
 }
 
 func ClientIP(r *http.Request) string {
-	if v := r.Header.Get("CF-Connecting-IP"); v != "" {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	// 只有来自本机/内网代理的请求才信任转发头，避免公网直连伪造 IP 绕过限流。
+	if !isTrustedProxy(host) {
+		return host
+	}
+	if v := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); v != "" {
 		return v
 	}
-	if v := r.Header.Get("X-Real-IP"); v != "" {
+	if v := strings.TrimSpace(r.Header.Get("X-Real-IP")); v != "" {
 		return v
 	}
 	if v := r.Header.Get("X-Forwarded-For"); v != "" {
@@ -235,11 +243,15 @@ func ClientIP(r *http.Request) string {
 		}
 		return strings.TrimSpace(v)
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
 	return host
+}
+
+func isTrustedProxy(host string) bool {
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
 }
 
 // RateLimiter 是进程内的固定窗口限流，用于登录/验证码等敏感接口。

@@ -27,10 +27,22 @@ export const actionNames: Record<string, string> = {
   daily_sign_summary: '签到汇总',
 };
 
+let serverTimezoneOffset = '';
+
+export function setServerTimezoneOffset (offset?: string) {
+  serverTimezoneOffset = offset || '';
+}
+
+function parseServerDate (value: string): Date {
+  const normalized = value.includes('T') ? value : value.replace(' ', 'T');
+  const hasZone = /(?:[zZ]|[+-]\d{2}:\d{2})$/.test(normalized);
+  const zoned = hasZone || !normalized.includes('T') ? normalized : normalized + serverTimezoneOffset;
+  return new Date(zoned);
+}
+
 export function formatDateTime (value?: string | null): string {
   if (!value) return '—';
-  const normalized = value.includes('T') ? value : value.replace(' ', 'T');
-  const date = new Date(normalized);
+  const date = parseServerDate(value);
   if (Number.isNaN(date.getTime())) return value;
   return new Intl.DateTimeFormat('zh-CN', {
     month: '2-digit',
@@ -43,8 +55,7 @@ export function formatDateTime (value?: string | null): string {
 
 export function formatDate (value?: string | null): string {
   if (!value) return '—';
-  const normalized = value.includes('T') ? value : value.replace(' ', 'T');
-  const date = new Date(normalized);
+  const date = parseServerDate(value);
   if (Number.isNaN(date.getTime())) return value.slice(0, 10);
   return new Intl.DateTimeFormat('zh-CN', {
     year: 'numeric',
@@ -55,8 +66,7 @@ export function formatDate (value?: string | null): string {
 
 export function formatFullDateTime (value?: string | null): string {
   if (!value) return '—';
-  const normalized = value.includes('T') ? value : value.replace(' ', 'T');
-  const date = new Date(normalized);
+  const date = parseServerDate(value);
   if (Number.isNaN(date.getTime())) return value;
   return new Intl.DateTimeFormat('zh-CN', {
     year: 'numeric',

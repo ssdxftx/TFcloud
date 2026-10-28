@@ -46,7 +46,7 @@ func (s *AuditService) List(filters map[string]any) (map[string]any, error) {
 	where := []string{"1=1"}
 	args := []any{}
 	if action := strings.TrimSpace(str(filters["action"])); action != "" {
-		where = append(where, "action LIKE ?")
+		where = append(where, "action LIKE ? ESCAPE '\\'")
 		args = append(args, "%"+escapeLike(action)+"%")
 	}
 	if userID := asInt(filters["user_id"]); userID > 0 {
@@ -71,7 +71,7 @@ func (s *AuditService) List(filters map[string]any) (map[string]any, error) {
 			item["context_json"] = parseJSONTextDefault(v)
 		}
 	}
-	return pageResult(items, total, page, perPage), nil
+	return pageResult(items, total, page, perPage, offset), nil
 }
 
 // ---------- 敏感数据脱敏 ----------

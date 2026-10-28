@@ -49,16 +49,22 @@ func (p *Sport) CredentialRules() []sign.CredentialRule {
 func (p *Sport) SupportedActions() []string { return []string{"update_steps"} }
 
 func (p *Sport) ValidateAccount(creds map[string]any) (*sign.Profile, error) {
+	profile, _, err := p.ValidateAccountWithRefresh(creds)
+	return profile, err
+}
+
+func (p *Sport) ValidateAccountWithRefresh(creds map[string]any) (*sign.Profile, map[string]any, error) {
 	c := &sportClient{http: p.http, creds: cloneMap(creds)}
 	session, err := c.authenticate(context.Background())
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return &sign.Profile{
+	profile := &sign.Profile{
 		ExternalID:  sign.ValueString(session["user_id"]),
 		DisplayName: firstText(session["nickname"], "小米运动账号"),
 		Extra:       map[string]any{"provider": "Zepp Life", "login_verified_by": "app_token"},
-	}, nil
+	}
+	return profile, c.refreshed(), nil
 }
 
 func (p *Sport) Execute(ctx context.Context, c *sign.Context) (*sign.Result, error) {

@@ -232,8 +232,8 @@ func (m *MailService) AllRecords(keyword, status, templateCode string, limit, of
 	where := []string{"1=1"}
 	args := []any{}
 	if keyword != "" {
-		where = append(where, "(r.recipient LIKE ? OR r.message_no LIKE ? OR r.subject LIKE ?)")
-		like := "%" + keyword + "%"
+		where = append(where, "(r.recipient LIKE ? ESCAPE '\\' OR r.message_no LIKE ? ESCAPE '\\' OR r.subject LIKE ? ESCAPE '\\')")
+		like := "%" + escapeLike(keyword) + "%"
 		args = append(args, like, like, like)
 	}
 	if status != "" {
@@ -444,7 +444,9 @@ func (m *MailService) refreshTaskStats() {
 		failed_count  = (SELECT COUNT(1) FROM TF_mail_records r WHERE r.task_id = TF_mail_tasks.id AND r.status='failed'),
 		status = CASE
 			WHEN (SELECT COUNT(1) FROM TF_mail_records r WHERE r.task_id = TF_mail_tasks.id AND r.status IN ('pending','sending')) > 0 THEN 'running'
-			WHEN (SELECT COUNT(1) FROM TF_mail_records r WHERE r.task_id = TF_mail_tasks.id AND r.status='failed') > 0 THEN 'partial'
+			WHEN (SELECT COUNT(1) FROM TF_mail_records r WHERE r.task_id = TF_mail_tasks.id AND r.status='failed') > 0
+				AND (SELECT COUNT(1) FROM TF_mail_records r WHERE r.task_id = TF_mail_tasks.id AND r.status='sent') > 0 THEN 'partial'
+			WHEN (SELECT COUNT(1) FROM TF_mail_records r WHERE r.task_id = TF_mail_tasks.id AND r.status='failed') > 0 THEN 'failed'
 			ELSE 'succeeded' END,
 		finished_at = CASE
 			WHEN (SELECT COUNT(1) FROM TF_mail_records r WHERE r.task_id = TF_mail_tasks.id AND r.status IN ('pending','sending')) > 0 THEN NULL
@@ -464,8 +466,46 @@ func (m *MailService) Retry(taskNo string) (map[string]any, error) {
 		return nil, err
 	}
 	n, _ := res.RowsAffected()
-	_, _ = m.store.Write.Exec(`UPDATE TF_mail_tasks SET status='pending', updated_at=? WHERE id=?`, database.Now(), taskID)
+	if n > 0 {
+		_, _ = m.store.Write.Exec(`UPDATE TF_mail_tasks SET status='pending', updated_at=? WHERE id=?`, database.Now(), taskID)
+	} else {
+		m.refreshTaskStats()
+	}
 	return map[string]any{"task_no": taskNo, "requeued": n}, nil
+}
+
+// RecoverStaleSending 把进程崩溃后遗留的 sending 记录重新入队或标记失败。
+func (m *MailService) RecoverStaleSending(olderThan time.Duration, limit int) int {
+	if olderThan <= 0 {
+		olderThan = 5 * time.Minute
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	now := database.Now()
+	cutoff := database.Ts(time.Now().Add(-olderThan))
+	res, err := m.store.Write.Exec(`UPDATE TF_mail_records SET
+		status = CASE WHEN attempts >= max_attempts THEN 'failed' ELSE 'pending' END,
+		available_at = ?,
+		last_error_code = CASE WHEN attempts >= max_attempts THEN COALESCE(last_error_code, 'SMTP_SEND_STALE') ELSE last_error_code END,
+		last_error_message = CASE WHEN attempts >= max_attempts THEN COALESCE(last_error_message, '发送状态超时，已标记为失败') ELSE last_error_message END,
+		updated_at = ?
+		WHERE id IN (SELECT id FROM TF_mail_records WHERE status='sending' AND updated_at < ? ORDER BY id LIMIT ?)`,
+		now, now, cutoff, limit)
+	if err != nil {
+		if m.logger != nil {
+			m.logger.Warn("recover stale mail records failed", slog.String("error", err.Error()))
+		}
+		return 0
+	}
+	n, _ := res.RowsAffected()
+	if n > 0 {
+		m.refreshTaskStats()
+		if m.logger != nil {
+			m.logger.Warn("recovered stale mail records", slog.Int64("count", n))
+		}
+	}
+	return int(n)
 }
 
 // ---------- 模板渲染 ----------

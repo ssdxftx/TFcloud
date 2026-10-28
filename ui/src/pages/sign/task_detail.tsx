@@ -86,8 +86,8 @@ export default function TaskDetailPage ({ admin = false }: { admin?: boolean }) 
   const recordPages = records?.total_pages ?? Math.max(1, Math.ceil((records?.total ?? 0) / pageSize));
   const runPages = runs?.total_pages ?? Math.max(1, Math.ceil((runs?.total ?? 0) / pageSize));
   const canRetry = admin
-    ? ['succeeded', 'completed', 'failed', 'cancelled'].includes(task.status)
-    : ['failed', 'cancelled'].includes(task.status);
+    ? ['succeeded', 'completed', 'partial', 'failed', 'cancelled'].includes(task.status)
+    : ['failed', 'cancelled', 'partial'].includes(task.status);
 
   return (
     <div className='flex flex-col gap-5'>

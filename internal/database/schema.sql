@@ -374,6 +374,13 @@ CREATE TABLE IF NOT EXISTS TF_astrbot_messages (
 CREATE INDEX IF NOT EXISTS idx_astrbot_msg_conv ON TF_astrbot_messages(conversation_id, id);
 CREATE INDEX IF NOT EXISTS idx_astrbot_msg_user ON TF_astrbot_messages(user_id, created_at, role);
 
+CREATE TABLE IF NOT EXISTS TF_astrbot_rate_limits (
+  user_id      INTEGER NOT NULL,
+  window_start TEXT    NOT NULL,
+  used         INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (user_id, window_start)
+);
+
 CREATE TABLE IF NOT EXISTS TF_audit_logs (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   request_id    TEXT,

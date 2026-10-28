@@ -350,7 +350,9 @@ func (c *bilibiliClient) giveCoin(ctx context.Context, count int) sign.Record {
 		return failedRecord("give_coin", err)
 	}
 	rec := videoRecord(resp, "give_coin", video, "视频投币成功")
-	rec.Rewards = map[string]any{"coins_spent": count}
+	if rec.Status == "succeeded" {
+		rec.Rewards = map[string]any{"coins_spent": count}
+	}
 	return rec
 }
 
@@ -358,6 +360,9 @@ func (c *bilibiliClient) liveSign(ctx context.Context) sign.Record {
 	resp, err := c.get(ctx, "https://api.live.bilibili.com/xlive/web-ucenter/v1/sign/DoSign", "https://live.bilibili.com/", nil)
 	if err != nil {
 		return failedRecord("live_sign", err)
+	}
+	if !hasJSON(resp) {
+		return invalidRecord("live_sign", "live:daily_sign")
 	}
 	code := sign.ValueInt(resp.JSON["code"])
 	status := "failed"
@@ -371,7 +376,9 @@ func (c *bilibiliClient) liveSign(ctx context.Context) sign.Record {
 	return sign.Record{
 		Key: "live:daily_sign", Action: "live_sign", Status: status,
 		TargetType: "live", TargetName: "哔哩哔哩直播", Code: itoa(code),
-		Message: firstText(resp.JSON["message"], data["text"], pick(status == "succeeded", "直播签到成功", "直播签到失败")),
+		Message: firstText(resp.JSON["message"], data["text"], map[string]string{
+			"succeeded": "直播签到成功", "already_done": "直播签到今日已完成", "failed": "直播签到失败",
+		}[status]),
 		Rewards: map[string]any{"text": sign.ValueString(data["text"])},
 	}
 }
@@ -380,6 +387,9 @@ func (c *bilibiliClient) liveDailyBag(ctx context.Context) sign.Record {
 	resp, err := c.get(ctx, "https://api.live.bilibili.com/gift/v2/live/receive_daily_bag", "https://live.bilibili.com/", nil)
 	if err != nil {
 		return failedRecord("live_daily_bag", err)
+	}
+	if !hasJSON(resp) {
+		return invalidRecord("live_daily_bag", "live:live_daily_bag")
 	}
 	code := sign.ValueInt(resp.JSON["code"])
 	message := firstText(resp.JSON["message"], resp.JSON["msg"])
@@ -421,6 +431,9 @@ func (c *bilibiliClient) liveHeartbeat(ctx context.Context, roomID string) sign.
 	if err != nil {
 		return failedRecord("live_heartbeat", err)
 	}
+	if !hasJSON(resp) {
+		return invalidRecord("live_heartbeat", "live:live_heartbeat")
+	}
 	code := sign.ValueInt(resp.JSON["code"])
 	status := "failed"
 	if code == 0 {
@@ -439,6 +452,9 @@ func (c *bilibiliClient) openCapsule(ctx context.Context, requested int) sign.Re
 	detail, err := c.get(ctx, "https://api.live.bilibili.com/xlive/web-ucenter/v1/capsule/get_detail", "https://live.bilibili.com/", nil)
 	if err != nil {
 		return failedRecord("capsule_open", err)
+	}
+	if !hasJSON(detail) {
+		return invalidRecord("capsule_open", "live:capsule_open")
 	}
 	if sign.ValueInt(detail.JSON["code"]) != 0 {
 		return sign.Record{Key: "live:capsule_open", Action: "capsule_open", Status: "failed",
@@ -472,6 +488,9 @@ func (c *bilibiliClient) openCapsule(ctx context.Context, requested int) sign.Re
 	if err != nil {
 		return failedRecord("capsule_open", err)
 	}
+	if !hasJSON(resp) {
+		return invalidRecord("capsule_open", "live:capsule_open")
+	}
 	code := sign.ValueInt(resp.JSON["code"])
 	status := "failed"
 	if code == 0 {
@@ -504,6 +523,9 @@ func (c *bilibiliClient) comicSign(ctx context.Context) sign.Record {
 	if err != nil {
 		return failedRecord("comic_sign", err)
 	}
+	if !hasJSON(info) {
+		return invalidRecord("comic_sign", "comic:comic_sign")
+	}
 	if sign.ValueInt(info.JSON["code"]) != 0 {
 		return sign.Record{Key: "comic:comic_sign", Action: "comic_sign", Status: "failed",
 			Code: "BILIBILI_API_FAILED", Message: "获取漫画签到状态失败"}
@@ -515,6 +537,9 @@ func (c *bilibiliClient) comicSign(ctx context.Context) sign.Record {
 	resp, err := c.post(ctx, "https://manga.bilibili.com/twirp/activity.v1.Activity/ClockIn", form, "https://manga.bilibili.com/")
 	if err != nil {
 		return failedRecord("comic_sign", err)
+	}
+	if !hasJSON(resp) {
+		return invalidRecord("comic_sign", "comic:comic_sign")
 	}
 	code := sign.ValueInt(resp.JSON["code"])
 	status := "failed"
@@ -567,6 +592,14 @@ func videoReferer(video map[string]any) string {
 }
 
 func videoRecord(resp *sign.Response, action string, video map[string]any, successMessage string) sign.Record {
+	if !hasJSON(resp) {
+		return sign.Record{
+			Key: action + ":" + sign.ValueString(video["aid"]), Action: action, Status: "failed",
+			TargetType: "video", TargetID: sign.ValueString(video["aid"]), TargetName: sign.ValueString(video["bvid"]),
+			Code: "BILIBILI_RESPONSE_INVALID", Message: "哔哩哔哩返回了无法识别的响应",
+			Metrics: map[string]any{"bvid": sign.ValueString(video["bvid"])},
+		}
+	}
 	code := sign.ValueInt(resp.JSON["code"])
 	status := "failed"
 	if code == 0 {
@@ -579,6 +612,15 @@ func videoRecord(resp *sign.Response, action string, video map[string]any, succe
 		Message: firstText(resp.JSON["message"], pick(status == "succeeded", successMessage, "任务失败")),
 		Metrics: map[string]any{"bvid": sign.ValueString(video["bvid"])},
 	}
+}
+
+func hasJSON(resp *sign.Response) bool {
+	return resp != nil && resp.JSON != nil
+}
+
+func invalidRecord(action, key string) sign.Record {
+	return sign.Record{Key: key, Action: action, Status: "failed",
+		Code: "BILIBILI_RESPONSE_INVALID", Message: "哔哩哔哩返回了无法识别的响应"}
 }
 
 func failedRecord(action string, err error) sign.Record {
@@ -597,7 +639,10 @@ func alreadyDoneMessage(message string) bool {
 func collectRewards(data map[string]any) []any {
 	source := sign.Slice(data["bag_list"])
 	if source == nil {
-		source = sign.Slice(data)
+		source = sign.Slice(data["list"])
+	}
+	if source == nil {
+		source = sign.Slice(data["awards"])
 	}
 	var rewards []any
 	for _, item := range source {

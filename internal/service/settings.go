@@ -203,6 +203,17 @@ func (s *SettingsService) PublicSite() map[string]any {
 		site["running_days"] = 1
 	}
 
+	var userCount, signedAccounts, signedUsers int
+	_ = s.store.Read.Get(&userCount, `SELECT COUNT(1) FROM TF_users`)
+	today := time.Now().Format("2006-01-02")
+	_ = s.store.Read.Get(&signedAccounts, `SELECT COUNT(DISTINCT account_id) FROM TF_sign_tasks
+		WHERE schedule_date = ? AND status IN ('succeeded','partial')`, today)
+	_ = s.store.Read.Get(&signedUsers, `SELECT COUNT(DISTINCT user_id) FROM TF_sign_tasks
+		WHERE schedule_date = ? AND status IN ('succeeded','partial')`, today)
+	site["user_count"] = userCount
+	site["today_signed_accounts"] = signedAccounts
+	site["today_signed_users"] = signedUsers
+
 	relayAppReady := str(site["qq_relay_application_status"]) == "active" &&
 		strings.TrimSpace(str(site["qq_relay_client_id"])) != "" &&
 		strings.TrimSpace(str(site["qq_relay_login_url"])) != "" &&
@@ -222,6 +233,9 @@ func (s *SettingsService) PublicSite() map[string]any {
 		strings.TrimSpace(str(astrbot["base_url"])) != "" && truthy(astrbot["api_key_configured"])
 	site["assistant_name"] = firstNonEmpty(strings.TrimSpace(str(astrbot["bot_name"])), "天方助手")
 	site["registration_email_verification"] = truthy(site["registration_email_verification"]) && truthy(mailGroup["enabled"])
+	site["mail_enabled"] = truthy(mailGroup["enabled"])
+	site["timezone_offset"] = time.Now().Format("-07:00")
+	site["today"] = time.Now().Format("2006-01-02")
 
 	keys := []string{
 		"name", "title", "description", "base_url", "logo_url",
@@ -229,8 +243,9 @@ func (s *SettingsService) PublicSite() map[string]any {
 		"icp_number", "announcement", "home_announcement", "dashboard_announcement",
 		"maintenance_mode", "registration_enabled",
 		"login_challenge_enabled", "registration_challenge_enabled",
-		"registration_email_verification",
+		"registration_email_verification", "mail_enabled", "timezone_offset", "today",
 		"qq_login_enabled", "qq_auto_register", "running_since", "running_days",
+		"user_count", "today_signed_accounts", "today_signed_users",
 		"assistant_enabled", "assistant_name",
 	}
 	out := make(map[string]any, len(keys))
@@ -241,7 +256,7 @@ func (s *SettingsService) PublicSite() map[string]any {
 }
 
 func (s *SettingsService) encodeSecret(value, aad string) (string, error) {
-	key, err := secure.DecodeKey(s.cfg.AppKey)
+	key, err := secure.DecodeKey(s.cfg.SecretKey())
 	if err != nil {
 		return "", err
 	}
@@ -266,7 +281,7 @@ func (s *SettingsService) decodeSecret(encoded, aad string) (string, error) {
 	if err := json.Unmarshal([]byte(encoded), &payload); err != nil {
 		return "", err
 	}
-	key, err := secure.DecodeKey(s.cfg.AppKey)
+	key, err := secure.DecodeKey(s.cfg.SecretKey())
 	if err != nil {
 		return "", err
 	}

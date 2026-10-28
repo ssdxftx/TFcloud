@@ -84,7 +84,7 @@ func maskEmail(email string) string {
 }
 
 func (s *AuthService) hmacKey() ([]byte, error) {
-	return secure.DecodeKey(s.cfg.AppKey)
+	return secure.DecodeKey(s.cfg.SecretKey())
 }
 
 func (s *AuthService) hmacHex(value string) (string, error) {

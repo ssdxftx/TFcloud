@@ -5,7 +5,7 @@ import { Select, SelectItem } from '@heroui/select';
 import { Spinner } from '@heroui/spinner';
 import { Table, TableBody, TableCell, TableColumn, TableHeader, TableRow } from '@heroui/table';
 import { Tooltip } from '@heroui/tooltip';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'react-hot-toast';
 import { LuEye, LuRefreshCw, LuSquare } from 'react-icons/lu';
 import { useNavigate } from 'react-router-dom';
@@ -26,23 +26,32 @@ export default function TasksPage () {
   const [page, setPage] = useState(1);
   const [busy, setBusy] = useState('');
   const navigate = useNavigate();
+  const requestSeq = useRef(0);
 
   const load = useCallback(async () => {
-    const taskPage = await apiRequest<Paginated<SignTask>>({
-      url: '/sign-tasks',
-      params: {
-        page,
-        per_page: perPage,
-        status: status === 'all' ? undefined : status,
-        plugin_code: pluginCode === 'all' ? undefined : pluginCode,
-      },
-    });
-    setResult(taskPage);
+    const seq = ++requestSeq.current;
+    setLoading(true);
+    try {
+      const taskPage = await apiRequest<Paginated<SignTask>>({
+        url: '/sign-tasks',
+        params: {
+          page,
+          per_page: perPage,
+          status: status === 'all' ? undefined : status,
+          plugin_code: pluginCode === 'all' ? undefined : pluginCode,
+        },
+      });
+      if (seq !== requestSeq.current) return;
+      setResult(taskPage);
+    } catch (error) {
+      if (seq === requestSeq.current) toast.error(errorMessage(error));
+    } finally {
+      if (seq === requestSeq.current) setLoading(false);
+    }
   }, [page, pluginCode, status]);
 
   useEffect(() => {
-    setLoading(true);
-    load().catch((error) => toast.error(errorMessage(error))).finally(() => setLoading(false));
+    void load();
   }, [load]);
   useEffect(() => {
     apiRequest<Platform[]>({ url: '/platforms' }).then(setPlatforms).catch((error) => toast.error(errorMessage(error)));
@@ -101,7 +110,7 @@ export default function TasksPage () {
                   <div className='mt-2 flex items-center justify-between gap-2'>
                     <span className='font-mono text-[11px] text-default-400'>{shortTaskNo(task.task_no)}</span>
                     <span className='flex items-center gap-0.5' onClick={(event) => event.stopPropagation()}>
-                      {['failed', 'cancelled'].includes(task.status) && (
+                      {['failed', 'cancelled', 'partial'].includes(task.status) && (
                         <Tooltip content='重新执行任务'>
                           <Button isIconOnly size='sm' variant='light' color='warning' className='h-7 w-7 min-w-7' aria-label='重新执行任务' isLoading={busy === task.task_no} onPress={() => void operate(task, 'retry')}>
                             <LuRefreshCw className='text-sm' />

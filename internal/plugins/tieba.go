@@ -96,6 +96,10 @@ func (p *Tieba) Execute(ctx context.Context, c *sign.Context) (*sign.Result, err
 		}
 		message = "部分贴吧签到失败"
 	}
+	cacheSize := 0
+	if items, ok := state["items"].([]map[string]any); ok {
+		cacheSize = len(items)
+	}
 	summary := map[string]any{
 		"total":                    len(records),
 		"succeeded":                succeeded,
@@ -103,7 +107,7 @@ func (p *Tieba) Execute(ctx context.Context, c *sign.Context) (*sign.Result, err
 		"failed":                   failed,
 		"request_failed_forum_ids": requestFailed,
 		"forum_sync_mode":          state["sync_mode"],
-		"forum_cache_size":         len(sign.Slice(state["items"])),
+		"forum_cache_size":         cacheSize,
 	}
 	if v, ok := state["request_failed_date"]; ok {
 		summary["request_failed_date"] = v
@@ -264,8 +268,16 @@ func (c *tiebaClient) forumPage(ctx context.Context, page int) (map[string]any, 
 	if err != nil {
 		return nil, err
 	}
+	if resp.JSON == nil {
+		return nil, sign.Fail("TIEBA_FORUM_LIST_FAILED", "获取贴吧列表失败：响应格式错误", 502)
+	}
 	if code := sign.ValueString(resp.JSON["error_code"]); code != "0" && code != "" {
 		return nil, sign.Fail("TIEBA_FORUM_LIST_FAILED", firstText(resp.JSON["error_msg"], "获取贴吧列表失败"), 502)
+	}
+	if page == 1 {
+		if _, ok := resp.JSON["forum_list"]; !ok {
+			return nil, sign.Fail("TIEBA_FORUM_LIST_FAILED", "获取贴吧列表失败：响应格式错误", 502)
+		}
 	}
 	return resp.JSON, nil
 }

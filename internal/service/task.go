@@ -171,7 +171,7 @@ func (s *TaskService) List(userID int64, filters map[string]any) (map[string]any
 	for i := range rows {
 		items = append(items, s.present(&rows[i]))
 	}
-	return pageResult(items, total, page, perPage), nil
+	return pageResult(items, total, page, perPage, offset), nil
 }
 
 func (s *TaskService) Show(userID int64, taskNo string) (map[string]any, error) {
@@ -245,7 +245,7 @@ func (s *TaskService) Runs(userID int64, taskNo string, filters map[string]any) 
 			item["summary_json"] = parseJSONText(v)
 		}
 	}
-	return pageResult(items, total, page, perPage), nil
+	return pageResult(items, total, page, perPage, offset), nil
 }
 
 func (s *TaskService) Records(userID int64, taskNo string, filters map[string]any) (map[string]any, error) {
@@ -306,7 +306,7 @@ func (s *TaskService) Records(userID int64, taskNo string, filters map[string]an
 			}
 		}
 	}
-	return pageResult(items, total, page, perPage), nil
+	return pageResult(items, total, page, perPage, offset), nil
 }
 
 func (s *TaskService) Retry(userID int64, taskNo string) (map[string]any, error) {
@@ -322,7 +322,8 @@ func (s *TaskService) Retry(userID int64, taskNo string) (map[string]any, error)
 	}
 	now := database.Now()
 	_, err = s.store.Write.Exec(`UPDATE TF_sign_tasks SET status='pending', available_at=?, locked_at=NULL,
-		locked_by=NULL, updated_at=? WHERE id=?`, now, now, task.ID)
+		locked_by=NULL, finished_at=NULL, last_error_code=NULL, last_error_message=NULL, updated_at=?
+		WHERE id=?`, now, now, task.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -338,9 +339,13 @@ func (s *TaskService) Cancel(userID int64, taskNo string) (map[string]any, error
 		return nil, respond.NewError("TASK_NOT_CANCELLABLE", "当前任务状态不能取消", 409)
 	}
 	now := database.Now()
-	if _, err := s.store.Write.Exec(`UPDATE TF_sign_tasks SET status='cancelled', finished_at=?, updated_at=? WHERE id=?`,
-		now, now, task.ID); err != nil {
+	res, err := s.store.Write.Exec(`UPDATE TF_sign_tasks SET status='cancelled', finished_at=?, updated_at=?
+		WHERE id=? AND status IN ('pending','retrying')`, now, now, task.ID)
+	if err != nil {
 		return nil, err
+	}
+	if affected, _ := res.RowsAffected(); affected == 0 {
+		return nil, respond.NewError("TASK_NOT_CANCELLABLE", "任务已开始执行或状态已变化，无法取消", 409)
 	}
 	return s.Show(userID, taskNo)
 }
@@ -411,6 +416,7 @@ func (s *TaskService) DispatchDue(limit int) int {
 	err := s.store.Read.Select(&rows, `SELECT a.* FROM TF_plugin_accounts a
 		JOIN TF_users u ON u.id = a.user_id
 		WHERE a.status IN ('active','pending_verification') AND a.deleted_at IS NULL
+		  AND u.status = 'active'
 		  AND a.next_run_at IS NOT NULL AND a.next_run_at <= ?
 		ORDER BY a.next_run_at, a.id LIMIT ?`, database.Now(), limit)
 	if err != nil {
@@ -479,7 +485,8 @@ func (s *TaskService) RequeueFailedToday(limit int) int {
 	rows := []model.SignTask{}
 	if err := s.store.Read.Select(&rows, `SELECT * FROM TF_sign_tasks
 		WHERE status='failed' AND attempts >= max_attempts AND max_attempts = ?
-		  AND schedule_date = ? AND last_error_code NOT IN ('PLUGIN_CREDENTIAL_EXPIRED','PLUGIN_CREDENTIAL_INVALID')
+		  AND schedule_date = ?
+		  AND (last_error_code IS NULL OR last_error_code NOT IN ('PLUGIN_CREDENTIAL_EXPIRED','PLUGIN_CREDENTIAL_INVALID'))
 		ORDER BY id LIMIT ?`, MaxAttempts, time.Now().Format("2006-01-02"), limit); err != nil {
 		return 0
 	}
@@ -514,14 +521,20 @@ func (s *TaskService) Claim(workerID, queue string) (*model.SignTask, bool) {
 				ORDER BY priority DESC, id LIMIT 1)
 			RETURNING id`, now, workerID, now, now, now)
 	} else {
+		if queue == "" {
+			queue = QueueDefault
+		}
+		if queue != QueueDefault && queue != QueueBilibiliLive {
+			return nil, false
+		}
 		err = s.store.Write.Get(&id, `UPDATE TF_sign_tasks SET status='running', attempts=attempts+1,
 			locked_at=?, locked_by=?, started_at=COALESCE(started_at, ?), updated_at=?
 			WHERE id = (SELECT id FROM TF_sign_tasks
-				WHERE queue_name='default'
+				WHERE queue_name=?
 				  AND (available_at IS NULL OR available_at <= ?)
 				  AND (status='pending' OR (status='retrying' AND NOT (plugin_code='tieba' AND last_error_code='UPSTREAM_REQUEST_FAILED')))
 				ORDER BY priority DESC, id LIMIT 1)
-			RETURNING id`, now, workerID, now, now, now)
+			RETURNING id`, now, workerID, now, now, queue, now)
 	}
 	if err != nil {
 		return nil, false
@@ -550,6 +563,12 @@ func (s *TaskService) ExecuteTask(task *model.SignTask, workerID string) {
 		return
 	}
 	runID, _ := res.LastInsertId()
+
+	var ownerStatus string
+	if err := s.store.Read.Get(&ownerStatus, `SELECT status FROM TF_users WHERE id = ?`, task.UserID); err != nil || ownerStatus != "active" {
+		s.failTask(task, runID, respond.NewError("USER_DISABLED", "任务所属用户已停用", 403), started)
+		return
+	}
 
 	acc, err := s.accounts.findOwned(task.UserID, task.AccountID)
 	if err != nil {
@@ -618,6 +637,7 @@ func (s *TaskService) completeTask(task *model.SignTask, runID int64, plugin sig
 			runStatus = "failed"
 		}
 	}
+	taskCounts, mergedRetry := mergeRetryCounts(task, counts)
 
 	finishedAt := database.Now()
 	duration := int(time.Since(started).Milliseconds())
@@ -626,6 +646,12 @@ func (s *TaskService) completeTask(task *model.SignTask, runID int64, plugin sig
 		summary = map[string]any{}
 	}
 	summary = RedactMap(summary)
+	if mergedRetry {
+		summary["total"] = taskCounts["total"]
+		summary["succeeded"] = taskCounts["success"]
+		summary["already_done"] = taskCounts["already"]
+		summary["failed"] = taskCounts["failed"]
+	}
 
 	retryFailure := transientFailure(task.PluginCode, result)
 	taskStatus := runStatus
@@ -669,8 +695,8 @@ func (s *TaskService) completeTask(task *model.SignTask, runID int64, plugin sig
 	if _, err := tx.Exec(`UPDATE TF_sign_tasks SET status=?, max_attempts=?, total_count=?, success_count=?,
 		already_count=?, skipped_count=?, failed_count=?, summary_json=?, last_error_code=?, last_error_message=?,
 		available_at=?, locked_at=NULL, locked_by=NULL, finished_at=?, updated_at=? WHERE id=?`,
-		taskStatus, maxAttempts, counts["total"], counts["success"], counts["already"], counts["skipped"],
-		counts["failed"], mustJSON(summary), errCode, errMessage, availableAt, finished, finishedAt, task.ID); err != nil {
+		taskStatus, maxAttempts, taskCounts["total"], taskCounts["success"], taskCounts["already"], taskCounts["skipped"],
+		taskCounts["failed"], mustJSON(summary), errCode, errMessage, availableAt, finished, finishedAt, task.ID); err != nil {
 		return
 	}
 
@@ -710,6 +736,32 @@ func (s *TaskService) completeTask(task *model.SignTask, runID int64, plugin sig
 	_ = plugin
 }
 
+// mergeRetryCounts 在贴吧补签只处理失败贴吧时，把本次结果叠加到任务累计计数上。
+func mergeRetryCounts(task *model.SignTask, run map[string]int) (map[string]int, bool) {
+	out := make(map[string]int, len(run))
+	for k, v := range run {
+		out[k] = v
+	}
+	if task.PluginCode != "tieba" || task.LastErrorCode == nil ||
+		*task.LastErrorCode != "UPSTREAM_REQUEST_FAILED" ||
+		str(unmarshalMap(task.SummaryJSON)["request_failed_date"]) != time.Now().Format("2006-01-02") {
+		return out, false
+	}
+	retried := run["total"] - run["failed"]
+	out["success"] = task.SuccessCount + run["success"]
+	out["already"] = task.AlreadyCount + run["already"]
+	out["skipped"] = task.SkippedCount + run["skipped"]
+	out["failed"] = task.FailedCount - retried
+	if out["failed"] < 0 {
+		out["failed"] = 0
+	}
+	out["total"] = task.TotalCount
+	if out["total"] == 0 {
+		out["total"] = out["success"] + out["already"] + out["skipped"] + out["failed"]
+	}
+	return out, true
+}
+
 func (s *TaskService) failTask(task *model.SignTask, runID int64, execErr error, started time.Time) {
 	code := "PLUGIN_EXECUTION_FAILED"
 	message := execErr.Error()
@@ -725,9 +777,10 @@ func (s *TaskService) failTask(task *model.SignTask, runID int64, execErr error,
 	}
 	message = RedactString(truncate(message, 500))
 	credentialExpired := code == "PLUGIN_CREDENTIAL_EXPIRED" || code == "PLUGIN_CREDENTIAL_INVALID"
+	userDisabled := code == "USER_DISABLED"
 	continuous := task.PluginCode == "tieba" && code == "UPSTREAM_REQUEST_FAILED"
 	ordinary := task.PluginCode != "tieba" && task.Attempts < task.MaxAttempts
-	retryable := !credentialExpired && (continuous || ordinary)
+	retryable := !credentialExpired && !userDisabled && (continuous || ordinary)
 
 	nextStatus := "failed"
 	var availableAt any
@@ -762,12 +815,14 @@ func (s *TaskService) failTask(task *model.SignTask, runID int64, execErr error,
 		nextStatus, maxAttempts, code, message, availableAt, finished, finishedAt, task.ID)
 
 	accountErr := any(code)
-	if !credentialExpired && nextStatus == "retrying" {
+	accountErrMessage := any(message)
+	if (!credentialExpired && nextStatus == "retrying") || userDisabled {
 		accountErr = nil
+		accountErrMessage = nil
 	}
 	_, _ = tx.Exec(`UPDATE TF_plugin_accounts SET last_run_at=?, last_error_code=?, last_error_message=?,
 		status=CASE WHEN ? THEN 'credential_expired' ELSE status END, updated_at=? WHERE id=?`,
-		finishedAt, accountErr, message, credentialExpired, finishedAt, task.AccountID)
+		finishedAt, accountErr, accountErrMessage, credentialExpired, finishedAt, task.AccountID)
 	if err := tx.Commit(); err != nil {
 		s.logger.Error("fail task commit failed", slog.String("error", err.Error()))
 	}
@@ -782,10 +837,16 @@ func (s *TaskService) RecoverStale(timeoutSeconds, limit int) int {
 		limit = 100
 	}
 	cutoff := database.Ts(time.Now().Add(-time.Duration(timeoutSeconds) * time.Second))
+	liveTimeout := timeoutSeconds
+	if minLive := int(liveMaxDuration.Seconds()) + 300; liveTimeout < minLive {
+		liveTimeout = minLive
+	}
+	liveCutoff := database.Ts(time.Now().Add(-time.Duration(liveTimeout) * time.Second))
 	rows := []model.SignTask{}
 	if err := s.store.Read.Select(&rows, `SELECT * FROM TF_sign_tasks
-		WHERE status='running' AND queue_name <> 'bilibili_live' AND locked_at IS NOT NULL AND locked_at < ?
-		ORDER BY locked_at LIMIT ?`, cutoff, limit); err != nil {
+		WHERE status='running' AND locked_at IS NOT NULL AND locked_at < ?
+		  AND (queue_name <> 'bilibili_live' OR locked_at < ?)
+		ORDER BY locked_at LIMIT ?`, cutoff, liveCutoff, limit); err != nil {
 		return 0
 	}
 	recovered := 0
@@ -897,9 +958,6 @@ func (s *TaskService) saveRecord(task *model.SignTask, runID int64, rec sign.Rec
 
 func (s *TaskService) present(task *model.SignTask) map[string]any {
 	status := task.Status
-	if status == "partial" {
-		status = "completed"
-	}
 	var lastError any
 	if task.LastErrorCode != nil {
 		lastError = map[string]any{"code": *task.LastErrorCode, "message": deref(task.LastErrorMessage)}
@@ -1010,7 +1068,7 @@ func paginate(filters map[string]any, defaultPerPage int) (page, perPage, offset
 	return
 }
 
-func pageResult(items []map[string]any, total, page, perPage int) map[string]any {
+func pageResult(items []map[string]any, total, page, perPage, offset int) map[string]any {
 	totalPages := (total + perPage - 1) / perPage
 	if totalPages < 1 {
 		totalPages = 1
@@ -1022,7 +1080,7 @@ func pageResult(items []map[string]any, total, page, perPage int) map[string]any
 		"per_page":    perPage,
 		"total_pages": totalPages,
 		"limit":       perPage,
-		"offset":      (page - 1) * perPage,
+		"offset":      offset,
 	}
 }
 

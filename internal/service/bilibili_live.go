@@ -80,6 +80,9 @@ func (s *LiveService) discover(ctx context.Context, creds map[string]any) ([]liv
 	if err != nil {
 		return nil, err
 	}
+	if resp.JSON == nil {
+		return nil, sign.Fail("BILIBILI_MEDAL_FAILED", "获取粉丝牌列表失败：响应格式错误", 502)
+	}
 	if sign.ValueInt(resp.JSON["code"]) != 0 {
 		return nil, sign.Fail("BILIBILI_MEDAL_FAILED", firstText(resp.JSON["message"], "获取粉丝牌列表失败"), 502)
 	}
@@ -149,6 +152,9 @@ func (s *LiveService) enterRoom(ctx context.Context, creds map[string]any, room 
 	if err != nil {
 		return nil, err
 	}
+	if resp.JSON == nil {
+		return nil, sign.Fail("BILIBILI_LIVE_ENTER_FAILED", "进入直播间失败：响应格式错误", 502)
+	}
 	if sign.ValueInt(resp.JSON["code"]) != 0 {
 		return nil, sign.Fail("BILIBILI_LIVE_ENTER_FAILED", firstText(resp.JSON["message"], "进入直播间失败"), 502)
 	}
@@ -209,6 +215,9 @@ func (s *LiveService) heartbeat(ctx context.Context, creds map[string]any, room 
 	if err != nil {
 		return err
 	}
+	if resp.JSON == nil {
+		return sign.Fail("BILIBILI_LIVE_HEARTBEAT_FAILED", "心跳失败：响应格式错误", 502)
+	}
 	if code := sign.ValueInt(resp.JSON["code"]); code != 0 {
 		return sign.Fail("BILIBILI_LIVE_HEARTBEAT_FAILED", firstText(resp.JSON["message"], "心跳失败"), 502)
 	}
@@ -231,14 +240,25 @@ func (s *LiveService) roomInfo(ctx context.Context, creds map[string]any, roomID
 // RunSession 执行一次完整的挂机任务（由 live worker 调用）。
 func (s *LiveService) RunSession(task *model.SignTask, workerID string) {
 	started := time.Now()
+	runID, err := s.startRun(task, workerID, started)
+	if err != nil {
+		s.logger.Error("create live run failed", slog.String("error", err.Error()))
+		s.finish(task, nil, 0, "failed", 0, 0, 1, "LIVE_RUN_CREATE_FAILED", "创建直播执行记录失败")
+		return
+	}
+	var ownerStatus string
+	if err := s.store.Read.Get(&ownerStatus, `SELECT status FROM TF_users WHERE id = ?`, task.UserID); err != nil || ownerStatus != "active" {
+		s.finish(task, nil, runID, "failed", 0, 0, 1, "USER_DISABLED", "任务所属用户已停用")
+		return
+	}
 	acc, err := s.accounts.findOwned(task.UserID, task.AccountID)
 	if err != nil {
-		s.finish(task, nil, "failed", 0, 0, 1, "PLUGIN_ACCOUNT_DISABLED", err.Error())
+		s.finish(task, nil, runID, "failed", 0, 0, 1, "PLUGIN_ACCOUNT_DISABLED", err.Error())
 		return
 	}
 	creds, err := s.accounts.DecryptedCredential(acc)
 	if err != nil {
-		s.finish(task, nil, "failed", 0, 0, 1, "PLUGIN_CREDENTIAL_MISSING", err.Error())
+		s.finish(task, nil, runID, "failed", 0, 0, 1, "PLUGIN_CREDENTIAL_MISSING", err.Error())
 		return
 	}
 	settings := unmarshalMap(acc.SettingsJSON)
@@ -256,7 +276,7 @@ func (s *LiveService) RunSession(task *model.SignTask, workerID string) {
 
 	medals, err := s.discover(ctx, creds)
 	if err != nil {
-		s.finish(task, nil, "failed", 0, 0, 1, errorCode(err), err.Error())
+		s.finish(task, nil, runID, "failed", 0, 0, 1, errorCode(err), err.Error())
 		return
 	}
 	if len(medals) > maxRooms {
@@ -268,16 +288,16 @@ func (s *LiveService) RunSession(task *model.SignTask, workerID string) {
 	res, err := s.store.Write.Exec(`INSERT INTO TF_bilibili_live_sessions
 		(session_no, task_id, run_id, user_id, account_id, status, target_heartbeat_count, max_failures,
 		 max_rooms, settings_json, expires_at, started_at, created_at, updated_at)
-		VALUES(?,?,0,?,?, 'running', ?,5,?,?,?,?,?,?)`,
-		sessionNo, task.ID, task.UserID, task.AccountID, target, maxRooms,
+		VALUES(?,?,?,?,?, 'running', ?,5,?,?,?,?,?,?)`,
+		sessionNo, task.ID, runID, task.UserID, task.AccountID, target, maxRooms,
 		mustJSON(settings), database.Ts(time.Now().Add(liveMaxDuration)), now, now, now)
 	if err != nil {
-		s.finish(task, nil, "failed", 0, 0, 1, "LIVE_SESSION_FAILED", "创建挂机会话失败")
+		s.finish(task, nil, runID, "failed", 0, 0, 1, "LIVE_SESSION_FAILED", "创建挂机会话失败")
 		return
 	}
 	sessionID, _ := res.LastInsertId()
 
-	successRooms, failedRooms := 0, 0
+	completedRooms, partialRooms, failedRooms := 0, 0, 0
 	var failures []string
 
 	for idx, medal := range medals {
@@ -343,36 +363,62 @@ func (s *LiveService) RunSession(task *model.SignTask, workerID string) {
 		s.updateRoom(roomRowID, map[string]any{"status": status, "heartbeat_count": count,
 			"finished_at": database.Now()})
 		s.writeProgress(sessionID, roomRowID, count, target, count >= target)
-		if count > 0 {
-			successRooms++
-		} else {
+		switch {
+		case count >= target:
+			completedRooms++
+		case count > 0:
+			partialRooms++
+		default:
 			failedRooms++
 		}
 	}
 
-	status := "succeeded"
-	if failedRooms > 0 && successRooms == 0 {
-		status = "failed"
-	} else if failedRooms > 0 {
-		status = "partial"
-	}
-	message := fmt.Sprintf("粉丝牌挂机完成：%d 个直播间成功，%d 个失败", successRooms, failedRooms)
+	status, successCount, failedCount := liveOutcome(completedRooms, partialRooms, failedRooms)
+	message := fmt.Sprintf("粉丝牌挂机完成：%d 个直播间完成，%d 个部分完成，%d 个失败",
+		completedRooms, partialRooms, failedRooms)
 	code := ""
 	if status == "failed" {
 		code = "BILIBILI_LIVE_FAILED"
 		if len(failures) > 0 {
 			message = failures[0]
 		}
+	} else if status == "partial" {
+		code = "BILIBILI_LIVE_PARTIAL"
 	}
 	finishSession := map[string]any{
 		"status": "finished", "summary_json": mustJSON(map[string]any{
-			"rooms_total": len(medals), "rooms_succeeded": successRooms, "rooms_failed": failedRooms,
-			"target_heartbeats": target, "duration_ms": time.Since(started).Milliseconds(),
+			"rooms_total": len(medals), "rooms_succeeded": completedRooms, "rooms_partial": partialRooms,
+			"rooms_failed": failedRooms, "target_heartbeats": target,
+			"duration_ms": time.Since(started).Milliseconds(),
 		}),
 		"finished_at": database.Now(),
 	}
 	s.updateSession(sessionID, finishSession)
-	s.finish(task, &sessionID, status, successRooms, 0, failedRooms, code, message)
+	s.finish(task, &sessionID, runID, status, successCount, 0, failedCount, code, message)
+}
+
+func liveOutcome(completed, partial, failed int) (status string, success, failedCount int) {
+	failedCount = partial + failed
+	switch {
+	case completed == 0:
+		return "failed", 0, failedCount
+	case failedCount > 0:
+		return "partial", completed, failedCount
+	default:
+		return "succeeded", completed, 0
+	}
+}
+
+func (s *LiveService) startRun(task *model.SignTask, workerID string, started time.Time) (int64, error) {
+	ts := database.Ts(started)
+	res, err := s.store.Write.Exec(`INSERT INTO TF_sign_runs
+		(run_no, task_id, attempt_no, plugin_code, worker_id, status, started_at, created_at)
+		VALUES(?,?,?,?,?, 'running', ?,?)`,
+		secure.RandomHex(16), task.ID, task.Attempts, task.PluginCode, workerID, ts, ts)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
 }
 
 func (s *LiveService) writeProgress(sessionID, roomRowID int64, count, target int, completed bool) {
@@ -417,7 +463,7 @@ func (s *LiveService) updateSession(id int64, fields map[string]any) {
 	_, _ = s.store.Write.Exec(`UPDATE TF_bilibili_live_sessions SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...)
 }
 
-func (s *LiveService) finish(task *model.SignTask, sessionID *int64, status string, success, already, failed int,
+func (s *LiveService) finish(task *model.SignTask, sessionID *int64, runID int64, status string, success, already, failed int,
 	code, message string) {
 	finished := database.Now()
 	runStatus := "succeeded"
@@ -432,6 +478,10 @@ func (s *LiveService) finish(task *model.SignTask, sessionID *int64, status stri
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	recordStatus := status
+	if recordStatus != "succeeded" && recordStatus != "partial" {
+		recordStatus = "failed"
+	}
 	total := success + failed
 	var errCode, errMsg any
 	if status != "succeeded" {
@@ -443,17 +493,20 @@ func (s *LiveService) finish(task *model.SignTask, sessionID *int64, status stri
 		runStatus, total, success, already, failed, errCode, errMsg, finished, finished, task.ID)
 	_, _ = tx.Exec(`UPDATE TF_plugin_accounts SET last_run_at=?, last_error_code=?, last_error_message=?,
 		updated_at=? WHERE id=?`, finished, errCode, errMsg, finished, task.AccountID)
-
-	// 一条汇总记录，便于前端任务详情直接展示。
-	recordKey := "live_fans_medal:summary"
-	_, _ = tx.Exec(`INSERT INTO TF_sign_records
-		(task_id, run_id, user_id, account_id, plugin_code, record_key, sequence_no, schema_version, action,
-		 target_type, target_name, status, result_code, message, metrics_json, finished_at, created_at)
-		VALUES(?,0,?,?, 'bilibili', ?,0,1, 'live_fans_medal', 'live', '粉丝牌挂机', ?,?,?,?,?,?)`,
-		task.ID, task.UserID, task.AccountID, recordKey,
-		map[bool]string{true: "succeeded", false: "failed"}[status == "succeeded"],
-		nullableString(code), truncate(message, 500),
-		mustJSON(map[string]any{"succeeded": success, "failed": failed, "total": total}), finished, finished)
+	if runID > 0 {
+		_, _ = tx.Exec(`UPDATE TF_sign_runs SET status=?, total_count=?, success_count=?, already_count=?,
+			failed_count=?, error_code=?, error_message=?, summary_json=?, finished_at=? WHERE id=?`,
+			runStatus, total, success, already, failed, errCode, errMsg,
+			mustJSON(map[string]any{"succeeded": success, "failed": failed, "total": total}), finished, runID)
+		recordKey := "live_fans_medal:summary"
+		_, _ = tx.Exec(`INSERT INTO TF_sign_records
+			(task_id, run_id, user_id, account_id, plugin_code, record_key, sequence_no, schema_version, action,
+			 target_type, target_name, status, result_code, message, metrics_json, finished_at, created_at)
+			VALUES(?,?,?,?, 'bilibili', ?,0,1, 'live_fans_medal', 'live', '粉丝牌挂机', ?,?,?,?,?,?)`,
+			task.ID, runID, task.UserID, task.AccountID, recordKey, recordStatus,
+			nullableString(code), truncate(message, 500),
+			mustJSON(map[string]any{"succeeded": success, "failed": failed, "total": total}), finished, finished)
+	}
 	_ = tx.Commit()
 
 	if s.tasks != nil {

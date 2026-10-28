@@ -216,6 +216,9 @@ export interface SiteSettings {
   maintenance_mode: boolean; registration_enabled: boolean;
   login_challenge_enabled: boolean; registration_challenge_enabled: boolean;
   registration_email_verification?: boolean;
+  mail_enabled?: boolean;
+  timezone_offset?: string;
+  today?: string;
   qq_login_enabled: boolean; qq_auto_register?: boolean; qq_login_provider?: 'relay' | 'official';
   qq_app_id?: string; qq_app_key?: string; qq_app_key_configured?: boolean; qq_callback_url?: string;
   qq_relay_authorize_url?: string; qq_relay_decode_key?: string; qq_relay_decode_key_configured?: boolean;

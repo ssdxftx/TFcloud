@@ -91,6 +91,8 @@ export default function AssistantPage () {
   const [resetting, setResetting] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const streamAbortRef = useRef<AbortController | null>(null);
+  const unmountedRef = useRef(false);
   const { user } = useSignAuth();
   const navigate = useNavigate();
 
@@ -103,13 +105,21 @@ export default function AssistantPage () {
       }),
     ]);
     setStatus(assistantStatus);
-    setMessages(history.items);
+    setMessages([...history.items].reverse());
   };
 
   useEffect(() => {
     load()
       .catch((error) => toast.error(errorMessage(error)))
       .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    unmountedRef.current = false;
+    return () => {
+      unmountedRef.current = true;
+      streamAbortRef.current?.abort();
+    };
   }, []);
 
   useEffect(() => {
@@ -150,6 +160,7 @@ export default function AssistantPage () {
     let currentAssistantId = optimisticAssistant.id;
     let streamError = '';
     const controller = new AbortController();
+    streamAbortRef.current = controller;
     const timeout = window.setTimeout(() => controller.abort(), 200000);
 
     setDraft('');
@@ -211,6 +222,7 @@ export default function AssistantPage () {
       );
       if (streamError) throw new Error(streamError);
     } catch (error) {
+      if (unmountedRef.current) return;
       const message = error instanceof DOMException && error.name === 'AbortError'
         ? '智能助手响应超时，请稍后重试'
         : errorMessage(error);
@@ -220,7 +232,7 @@ export default function AssistantPage () {
           url: '/assistant/messages',
           params: { page: 1, per_page: 100 },
         });
-        setMessages(history.items);
+        setMessages([...history.items].reverse());
       } catch {
         setMessages((current) => current.map((item) => item.id === currentAssistantId
           ? { ...item, status: 'failed', error: { code: 'STREAM_FAILED', message } }
@@ -228,6 +240,7 @@ export default function AssistantPage () {
       }
     } finally {
       window.clearTimeout(timeout);
+      if (streamAbortRef.current === controller) streamAbortRef.current = null;
       setSending(false);
       window.setTimeout(() => inputRef.current?.focus(), 50);
     }

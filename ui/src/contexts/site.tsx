@@ -8,6 +8,7 @@ import {
 
 import { apiRequest } from "@/api/client";
 import type { SiteSettings } from "@/types/sign";
+import { setServerTimezoneOffset } from "@/utils/sign";
 
 const defaultSite: SiteSettings = {
   name: "天方云签",
@@ -27,6 +28,7 @@ const defaultSite: SiteSettings = {
   login_challenge_enabled: true,
   registration_challenge_enabled: true,
   registration_email_verification: false,
+  mail_enabled: false,
   qq_login_enabled: false,
   assistant_enabled: false,
   assistant_name: "天方助手",
@@ -38,6 +40,7 @@ export function SiteProvider({ children }: PropsWithChildren) {
   useEffect(() => {
     apiRequest<SiteSettings>({ url: "/site" })
       .then((value) => {
+        setServerTimezoneOffset(value.timezone_offset);
         setSite({ ...defaultSite, ...value });
         document.title = value.title || value.name || defaultSite.title;
       })

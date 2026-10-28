@@ -48,7 +48,7 @@ export default function ForgotPasswordPage () {
       await apiRequest<null>({
         method: 'POST',
         url: '/auth/password/reset',
-        data: { email: form.email.trim(), verification_code: form.verification_code, new_password: form.new_password },
+        data: { email: form.email.trim(), code: form.verification_code, password: form.new_password },
       });
       toast.success('密码已重置，请使用新密码登录');
       navigate('/login', { replace: true });

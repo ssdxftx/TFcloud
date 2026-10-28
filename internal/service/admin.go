@@ -81,7 +81,7 @@ func (s *AdminService) Users(filters map[string]any) (map[string]any, error) {
 	args := []any{}
 	if keyword := strings.TrimSpace(str(filters["keyword"])); keyword != "" {
 		like := "%" + escapeLike(keyword) + "%"
-		where = append(where, "(username LIKE ? OR display_name LIKE ? OR email LIKE ? OR qq LIKE ?)")
+		where = append(where, "(username LIKE ? ESCAPE '\\' OR display_name LIKE ? ESCAPE '\\' OR email LIKE ? ESCAPE '\\' OR qq LIKE ? ESCAPE '\\')")
 		args = append(args, like, like, like, like)
 	}
 	if role := strings.TrimSpace(str(filters["role"])); role != "" {
@@ -101,7 +101,7 @@ func (s *AdminService) Users(filters map[string]any) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return pageResult(items, total, page, perPage), nil
+	return pageResult(items, total, page, perPage, offset), nil
 }
 
 func (s *AdminService) CreateUser(input map[string]any, adminID int64) (map[string]any, error) {
@@ -158,10 +158,6 @@ func (s *AdminService) UpdateUser(id int64, input map[string]any, adminID int64)
 		Role   string `db:"role"`
 		Status string `db:"status"`
 	}
-	if err := s.store.Read.Get(&current, `SELECT role, status FROM TF_users WHERE id = ?`, id); err != nil {
-		return nil, respond.NotFound("用户不存在")
-	}
-	finalRole, finalStatus := current.Role, current.Status
 	sets := []string{"updated_at = ?"}
 	args := []any{database.Now()}
 	if v, ok := input["display_name"]; ok {
@@ -184,12 +180,13 @@ func (s *AdminService) UpdateUser(id int64, input map[string]any, adminID int64)
 		sets = append(sets, "qq = ?")
 		args = append(args, nullableString(qq))
 	}
+	var roleChange, statusChange *string
 	if v, ok := input["role"]; ok {
 		role := strings.TrimSpace(str(v))
 		if role != "user" && role != "admin" {
 			return nil, respond.NewError("VALIDATION_FAILED", "角色无效", 422)
 		}
-		finalRole = role
+		roleChange = &role
 		sets = append(sets, "role = ?")
 		args = append(args, role)
 	}
@@ -198,23 +195,44 @@ func (s *AdminService) UpdateUser(id int64, input map[string]any, adminID int64)
 		if !contains([]string{"active", "disabled"}, status) {
 			return nil, respond.NewError("VALIDATION_FAILED", "状态无效", 422)
 		}
-		finalStatus = status
+		statusChange = &status
 		sets = append(sets, "status = ?")
 		args = append(args, status)
+	}
+
+	tx, err := s.store.Write.Beginx()
+	if err != nil {
+		return nil, respond.Internal("更新用户失败")
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := tx.Get(&current, `SELECT role, status FROM TF_users WHERE id = ?`, id); err != nil {
+		return nil, respond.NotFound("用户不存在")
+	}
+	finalRole, finalStatus := current.Role, current.Status
+	if roleChange != nil {
+		finalRole = *roleChange
+	}
+	if statusChange != nil {
+		finalStatus = *statusChange
 	}
 	if current.Role == "admin" && current.Status == "active" &&
 		(finalRole != "admin" || finalStatus != "active") {
 		var admins int
-		_ = s.store.Read.Get(&admins, `SELECT COUNT(1) FROM TF_users WHERE role='admin' AND status='active'`)
+		if err := tx.Get(&admins, `SELECT COUNT(1) FROM TF_users WHERE role='admin' AND status='active'`); err != nil {
+			return nil, respond.Internal("更新用户失败")
+		}
 		if admins <= 1 {
 			return nil, respond.NewError("VALIDATION_FAILED", "不能停用或降级最后一个管理员", 422)
 		}
 	}
 	args = append(args, id)
-	if _, err := s.store.Write.Exec(`UPDATE TF_users SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...); err != nil {
+	if _, err := tx.Exec(`UPDATE TF_users SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...); err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			return nil, respond.NewError("USER_FIELD_DUPLICATE", "邮箱或QQ号已被使用", 409)
 		}
+		return nil, respond.Internal("更新用户失败")
+	}
+	if err := tx.Commit(); err != nil {
 		return nil, respond.Internal("更新用户失败")
 	}
 	s.audit.Record(adminID, "admin.user.update", "user", strconvID(id), nil)
@@ -225,12 +243,29 @@ func (s *AdminService) DeleteUser(id, adminID int64) error {
 	if id == adminID {
 		return respond.NewError("VALIDATION_FAILED", "不能删除当前登录的管理员", 422)
 	}
-	res, err := s.store.Write.Exec(`DELETE FROM TF_users WHERE id = ? AND role <> 'admin'`, id)
+	var role string
+	if err := s.store.Read.Get(&role, `SELECT role FROM TF_users WHERE id = ?`, id); err != nil {
+		return respond.NewError("VALIDATION_FAILED", "该用户不存在或不允许删除管理员", 409)
+	}
+	if role == "admin" {
+		return respond.NewError("VALIDATION_FAILED", "该用户不存在或不允许删除管理员", 409)
+	}
+	tx, err := s.store.Write.Beginx()
 	if err != nil {
 		return respond.Internal("删除用户失败")
 	}
-	if affected, _ := res.RowsAffected(); affected == 0 {
-		return respond.NewError("VALIDATION_FAILED", "该用户不存在或不允许删除管理员", 409)
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`DELETE FROM TF_sign_tasks WHERE user_id = ?`, id); err != nil {
+		return respond.Internal("删除用户失败")
+	}
+	if _, err := tx.Exec(`DELETE FROM TF_plugin_accounts WHERE user_id = ?`, id); err != nil {
+		return respond.Internal("删除用户失败")
+	}
+	if _, err := tx.Exec(`DELETE FROM TF_users WHERE id = ? AND role <> 'admin'`, id); err != nil {
+		return respond.Internal("删除用户失败")
+	}
+	if err := tx.Commit(); err != nil {
+		return respond.Internal("删除用户失败")
 	}
 	s.audit.Record(adminID, "admin.user.delete", "user", strconvID(id), nil)
 	return nil
@@ -325,7 +360,7 @@ func (s *AdminService) Tasks(filters map[string]any) (map[string]any, error) {
 		item["account_name"] = rows[i].Nickname
 		items = append(items, item)
 	}
-	return pageResult(items, total, page, perPage), nil
+	return pageResult(items, total, page, perPage, offset), nil
 }
 
 func (s *AdminService) Task(taskNo string) (map[string]any, error) {
@@ -399,7 +434,7 @@ func (s *AdminService) Accounts(filters map[string]any) (map[string]any, error) 
 	}
 	if keyword := strings.TrimSpace(str(filters["keyword"])); keyword != "" {
 		like := "%" + escapeLike(keyword) + "%"
-		where = append(where, "(a.display_name LIKE ? OR a.external_user_id LIKE ? OR u.username LIKE ?)")
+		where = append(where, "(a.display_name LIKE ? ESCAPE '\\' OR a.external_user_id LIKE ? ESCAPE '\\' OR u.username LIKE ? ESCAPE '\\')")
 		args = append(args, like, like, like)
 	}
 	clause := strings.Join(where, " AND ")
@@ -423,7 +458,7 @@ func (s *AdminService) Accounts(filters map[string]any) (map[string]any, error) 
 		item["user_id"] = rows[i].PluginAccount.UserID
 		items = append(items, item)
 	}
-	return pageResult(items, total, page, perPage), nil
+	return pageResult(items, total, page, perPage, offset), nil
 }
 
 func (s *AdminService) UpdateAccount(id int64, input map[string]any, adminID int64) (map[string]any, error) {
@@ -480,6 +515,8 @@ func (s *AdminService) Plugins() []map[string]any {
 			"version":               meta.Version,
 			"description":           meta.Description,
 			"implementation_status": meta.Status,
+			"healthy":               meta.Status == "ready",
+			"health_message":        "",
 			"credential_types":      meta.CredentialTypes,
 			"credential_rules":      rules,
 			"actions":               plugin.SupportedActions(),
@@ -521,14 +558,54 @@ func (s *AdminService) Version() map[string]any {
 			}
 		}
 	}
+	status := "unavailable"
+	var checkedAt, checkError any
+	if reachable {
+		checkedAt = time.Now().Format(time.RFC3339)
+		switch {
+		case latest == current:
+			status = "up_to_date"
+		case versionGreater(latest, current):
+			status = "update_available"
+		default:
+			status = "ahead"
+		}
+	} else {
+		checkError = "远程版本检查失败"
+	}
 	return map[string]any{
-		"current_version":  current,
-		"latest_version":   latest,
-		"is_latest":        latest == current,
-		"update_available": latest != current,
-		"page_url":         s.cfg.UpdatePageURL,
-		"checked":          reachable,
-		"runtime":          "go",
+		"program": map[string]any{
+			"name":        "天方云签",
+			"description": "基于 Go 与 React 构建的模块化自动签到管理平台。",
+			"features": []string{
+				"多平台自动签到与任务编排",
+				"粉丝牌直播挂机与邮件通知",
+				"凭据加密存储与完整审计日志",
+			},
+		},
+		"author": map[string]any{
+			"name":     "龙辉",
+			"qq":       "1790716272",
+			"qq_group": "701550577",
+			"blog_url": "https://blog.eirds.cn/",
+		},
+		"copyright": map[string]any{
+			"owner":       "龙辉",
+			"start_year":  2016,
+			"website":     "www.yunsign.net",
+			"website_url": "https://www.yunsign.net",
+			"notice":      "天方云签 · 龙辉 版权所有",
+		},
+		"version": map[string]any{
+			"current":          current,
+			"latest":           latest,
+			"status":           status,
+			"update_available": status == "update_available",
+			"checked_at":       checkedAt,
+			"error":            checkError,
+			"update_page_url":  s.cfg.UpdatePageURL,
+		},
+		"repository_url": "https://github.com/longfie/TFcloud",
 	}
 }
 
