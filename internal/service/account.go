@@ -428,7 +428,7 @@ func (s *AccountService) MergeRuntimeCredentials(accountID int64, patch map[stri
 	allowed := map[string]bool{
 		"access_token": true, "refresh_token": true, "access_token_expires_at": true,
 		"token": true, "token_updated_at": true, "app_token": true, "login_token": true,
-		"user_id": true, "device_id": true, "display_name": true,
+		"user_id": true, "device_id": true, "display_name": true, "cookie": true,
 	}
 	filtered := map[string]any{}
 	for k, v := range patch {
@@ -492,6 +492,12 @@ func (s *AccountService) TriggerAction(userID, accountID int64, action string) (
 // ---------- 校验辅助 ----------
 
 func assertCredentialShape(plugin sign.Plugin, credentials map[string]any) error {
+	if validator, ok := plugin.(sign.CredentialShapeValidator); ok {
+		if err := validator.ValidateCredentialShape(credentials); err != nil {
+			return toAPIError(err)
+		}
+		return nil
+	}
 	var missing []string
 	for _, rule := range plugin.CredentialRules() {
 		if !rule.Required {

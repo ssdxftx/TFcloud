@@ -11,5 +11,6 @@ Copyright (C) 龙辉（longfie）<https://www.yunsign.net/>
 - Zepp Life（mimotion, TonyJiangWJ）见 internal/plugins/sport.go 注释
 - 天翼云盘（cloud189-sdk, wes-lin）
 - 哔咔漫画（picacomic-api, LGPL-3.0）
+- 赛马娘、Yamibo、V2EX 签到逻辑参考 jckling/Daily-Bonus（MIT）
 
 按 AGPL-3.0 第 13 条，通过网络使用本程序的用户有权获取对应源码。

@@ -131,6 +131,24 @@ const platformStyles: Record<string, { accent: string; surface: string; glyph: s
     glyph: '咔', badge: 'bg-fuchsia-500/10 text-fuchsia-700 dark:text-fuchsia-300',
     option: '!bg-gradient-to-r !from-fuchsia-50 !to-violet-50 data-[hover=true]:!from-fuchsia-100 data-[hover=true]:!to-violet-100 data-[selected=true]:!from-fuchsia-100 data-[selected=true]:!to-violet-100 dark:!from-fuchsia-950/60 dark:!to-violet-950/40',
   },
+  uma: {
+    accent: 'from-rose-500 to-pink-400 shadow-rose-500/25',
+    surface: '!bg-gradient-to-br !from-rose-50 !via-white !to-pink-50/80 dark:!from-rose-950/35 dark:!via-content1 dark:!to-pink-950/20',
+    glyph: '马', badge: 'bg-rose-500/10 text-rose-600 dark:text-rose-300',
+    option: '!bg-gradient-to-r !from-rose-50 !to-pink-50 data-[hover=true]:!from-rose-100 data-[hover=true]:!to-pink-100 data-[selected=true]:!from-rose-100 data-[selected=true]:!to-pink-100 dark:!from-rose-950/60 dark:!to-pink-950/40',
+  },
+  yamibo: {
+    accent: 'from-violet-600 to-purple-400 shadow-violet-500/25',
+    surface: '!bg-gradient-to-br !from-violet-50 !via-white !to-purple-50/80 dark:!from-violet-950/35 dark:!via-content1 dark:!to-purple-950/20',
+    glyph: '合', badge: 'bg-violet-500/10 text-violet-700 dark:text-violet-300',
+    option: '!bg-gradient-to-r !from-violet-50 !to-purple-50 data-[hover=true]:!from-violet-100 data-[hover=true]:!to-purple-100 data-[selected=true]:!from-violet-100 data-[selected=true]:!to-purple-100 dark:!from-violet-950/60 dark:!to-purple-950/40',
+  },
+  v2ex: {
+    accent: 'from-slate-700 to-slate-500 shadow-slate-500/25',
+    surface: '!bg-gradient-to-br !from-slate-50 !via-white !to-slate-100/80 dark:!from-slate-900/45 dark:!via-content1 dark:!to-slate-800/30',
+    glyph: 'V', badge: 'bg-slate-500/10 text-slate-700 dark:text-slate-300',
+    option: '!bg-gradient-to-r !from-slate-50 !to-slate-100 data-[hover=true]:!from-slate-100 data-[hover=true]:!to-slate-200 data-[selected=true]:!from-slate-100 data-[selected=true]:!to-slate-200 dark:!from-slate-900/60 dark:!to-slate-800/50',
+  },
 };
 
 const fallbackStyle = {
@@ -168,6 +186,18 @@ const methodCardThemes: Record<string, { selected: string; idle: string }> = {
   picacomic: {
     selected: 'border-fuchsia-400 bg-fuchsia-50/90 shadow-sm shadow-fuchsia-500/10 dark:border-fuchsia-500/50 dark:bg-fuchsia-950/35',
     idle: 'border-divider bg-content1/50 hover:border-fuchsia-400/60 hover:bg-fuchsia-50/55 dark:hover:bg-fuchsia-950/20',
+  },
+  uma: {
+    selected: 'border-rose-400 bg-rose-50/90 shadow-sm shadow-rose-500/10 dark:border-rose-500/50 dark:bg-rose-950/35',
+    idle: 'border-divider bg-content1/50 hover:border-rose-400/60 hover:bg-rose-50/55 dark:hover:bg-rose-950/20',
+  },
+  yamibo: {
+    selected: 'border-violet-400 bg-violet-50/90 shadow-sm shadow-violet-500/10 dark:border-violet-500/50 dark:bg-violet-950/35',
+    idle: 'border-divider bg-content1/50 hover:border-violet-400/60 hover:bg-violet-50/55 dark:hover:bg-violet-950/20',
+  },
+  v2ex: {
+    selected: 'border-slate-400 bg-slate-50/90 shadow-sm shadow-slate-500/10 dark:border-slate-500/50 dark:bg-slate-900/35',
+    idle: 'border-divider bg-content1/50 hover:border-slate-400/60 hover:bg-slate-50/55 dark:hover:bg-slate-900/20',
   },
 };
 
@@ -207,6 +237,11 @@ const passwordFieldMeta: Record<string, { username: string; password: string; de
     username: '哔咔登录邮箱',
     password: '哔咔密码',
     description: '使用哔咔漫画账号登录；密码与登录令牌均由服务器加密保存。',
+  },
+  yamibo: {
+    username: 'Yamibo 用户名',
+    password: 'Yamibo 密码',
+    description: '服务器会直接登录 Discuz 论坛并保存会话 Cookie；若站点触发 WAF，请改用 Cookie 导入。',
   },
 };
 

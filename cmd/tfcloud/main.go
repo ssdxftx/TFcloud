@@ -118,6 +118,9 @@ func bootstrap() (*app, error) {
 		plugins.NewSport(httpClient),
 		plugins.NewCloud189(httpClient),
 		plugins.NewPicacomic(httpClient),
+		plugins.NewUma(httpClient),
+		plugins.NewYamibo(httpClient),
+		plugins.NewV2EX(httpClient),
 	)
 	settings := service.NewSettings(store, cfg)
 	mail := service.NewMail(store, cfg, settings, log)

@@ -428,5 +428,8 @@ INSERT INTO TF_plugins (plugin_code, name, version, status, installed_at, update
   ('iqiyi','爱奇艺','0.2.0','enabled',datetime('now','localtime'),datetime('now','localtime')),
   ('sport','小米运动','0.2.0','enabled',datetime('now','localtime'),datetime('now','localtime')),
   ('cloud189','天翼云盘','0.1.0','enabled',datetime('now','localtime'),datetime('now','localtime')),
-  ('picacomic','哔咔漫画','0.1.0','enabled',datetime('now','localtime'),datetime('now','localtime'))
+  ('picacomic','哔咔漫画','0.1.0','enabled',datetime('now','localtime'),datetime('now','localtime')),
+  ('uma','赛马娘','0.1.0','enabled',datetime('now','localtime'),datetime('now','localtime')),
+  ('yamibo','Yamibo（百合会 / 300）','0.1.0','enabled',datetime('now','localtime'),datetime('now','localtime')),
+  ('v2ex','V2EX','0.1.0','enabled',datetime('now','localtime'),datetime('now','localtime'))
 ON CONFLICT(plugin_code) DO UPDATE SET name=excluded.name, version=excluded.version, updated_at=excluded.updated_at;

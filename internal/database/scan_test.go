@@ -30,8 +30,8 @@ func TestMigrateAndMaps(t *testing.T) {
 	if err := store.Read.Get(&plugins, `SELECT COUNT(1) FROM TF_plugins`); err != nil {
 		t.Fatal(err)
 	}
-	if plugins != 7 {
-		t.Fatalf("应预置 7 个插件，实际 %d", plugins)
+	if plugins != 10 {
+		t.Fatalf("应预置 10 个插件，实际 %d", plugins)
 	}
 
 	// 幂等：重复迁移不应报错

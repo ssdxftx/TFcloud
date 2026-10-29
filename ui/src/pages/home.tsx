@@ -68,7 +68,16 @@ const platforms = [
   { code: 'cloud189', name: '天翼云盘' },
   { code: 'sport', name: '小米运动' },
   { code: 'picacomic', name: '哔咔漫画' },
+  { code: 'uma', name: '赛马娘' },
+  { code: 'yamibo', name: 'Yamibo' },
+  { code: 'v2ex', name: 'V2EX' },
 ];
+
+const platformFallbackClass: Record<string, string> = {
+  uma: 'bg-gradient-to-br from-rose-500 to-pink-400',
+  yamibo: 'bg-gradient-to-br from-violet-600 to-purple-400',
+  v2ex: 'bg-gradient-to-br from-slate-700 to-slate-500',
+};
 
 function isVideoBackground (url: string, type: 'auto' | 'image' | 'video') {
   if (type === 'video') return true;
@@ -275,7 +284,7 @@ export default function HomePage () {
             <div className='mt-10 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6'>
               {platforms.map((platform) => (
                 <div key={platform.name} className='rounded-2xl border border-default-200 bg-default-50 p-5 transition-transform hover:-translate-y-1 dark:bg-default-100/30'>
-                  <PlatformBrandIcon code={platform.code} name={platform.name} className='mx-auto h-12 w-12 rounded-[15px] shadow-lg ring-1 ring-black/5' />
+                  <PlatformBrandIcon code={platform.code} name={platform.name} fallback={platform.name.slice(0, 1)} className='mx-auto h-12 w-12 rounded-[15px] shadow-lg ring-1 ring-black/5' fallbackClassName={`text-lg font-black text-white ${platformFallbackClass[platform.code] || 'bg-gradient-to-br from-slate-700 to-slate-500'}`} />
                   <p className='mt-3 text-sm font-medium'>{platform.name}</p>
                 </div>
               ))}

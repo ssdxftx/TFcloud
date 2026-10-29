@@ -51,14 +51,14 @@
 
 ## 一、它是什么
 
-一个自己部署、自己用的签到中心：把贴吧、B 站、网易云、爱奇艺、Zepp Life、天翼云盘、哔咔漫画这些
+一个自己部署、自己用的签到中心：把贴吧、B 站、网易云、爱奇艺、Zepp Life、天翼云盘、哔咔漫画、赛马娘、Yamibo、V2EX 这些
 「每天点一下」的动作交给程序，按你指定的时间自动执行，失败自动重试，结果写进明细和日历。
 
 **核心特性**
 
 | 特性 | 说明 |
 |---|---|
-| 7 个平台插件 | 贴吧、哔哩哔哩、网易云音乐、爱奇艺、Zepp Life、天翼云盘、哔咔漫画 |
+| 10 个平台插件 | 贴吧、哔哩哔哩、网易云音乐、爱奇艺、Zepp Life、天翼云盘、哔咔漫画、赛马娘、Yamibo、V2EX |
 | 多账号多任务 | 一个用户可挂多个平台账号，每个账号独立计划 |
 | 定时调度 | `auto`（按账号 ID 散列到 05:00–08:00 的随机分钟）或 `fixed`（自定 HH:MM） |
 | 失败重试 | 普通任务最多 24 次，指数退避；贴吧「上游请求失败」持续补签直到成功 |
@@ -510,6 +510,9 @@ data/
 | Zepp Life | 账号密码 | 手机号或邮箱 + 密码 | 直接填，服务端换 Token（加密保存，自动续期） |
 | 天翼云盘 | 账号密码 | 手机号或邮箱 + 密码 | 直接填；若提示设备锁，先去网页端完成一次验证 |
 | 哔咔漫画 | 账号密码 | 邮箱 + 密码 | 直接填 |
+| 赛马娘 | Cookie 导入 | 合并的完整 Cookie（含 `site`、`joy_jct`、`DedeUserID`、`SESSDATA`） | 登录 uma.komoejoy.com → F12 → Application → Cookies 复制同名项 |
+| Yamibo（百合会 / 300） | 账号密码 / Cookie 导入 | 用户名 + 密码；或论坛完整 Cookie（含通过 WAF 后的 `nox_jst_v1`） | 直接填账号密码；若服务器登录被 WAF 拦截，浏览器通过验证后复制 Cookie |
+| V2EX | Cookie 导入 | `PB3_SESSION`、`A2`（`V2EX_LANG`、`V2EX_TAB` 可选） | 登录 v2ex.com → F12 → Application → Cookies |
 
 **关于凭据安全**：所有凭据用 XChaCha20-Poly1305 加密后入库，AAD 绑定「插件 + 账号 ID + 类型」，
 页面不再回显；接口只返回「是否已配置」。数据库被拖走但没拿到 `APP_KEY`，凭据依然是密文。
@@ -602,7 +605,7 @@ data/
 | 审计日志 | 谁在什么时候做了什么（设置变更、用户操作、邮件群发等） |
 | 邮件 | 概览、任务列表、投递记录、失败重试、自拟正文群发、测试发信 |
 | 站点设置 | 站点信息、注册开关、人机验证、QQ 登录、SMTP |
-| 插件 | 7 个插件的版本、状态、凭据规则、支持的动作 |
+| 插件 | 10 个插件的版本、状态、凭据规则、支持的动作 |
 | 版本 | 与上游 VERSION 比对（只提示，不自动更新） |
 
 ---
@@ -673,8 +676,8 @@ tfcloud version                  # 版本
 已安装      : true
 APP_KEY     : 正常（32 字节）
 指纹密钥    : 已配置
-数据表      : 22 张
-插件        : 7 个
+数据表      : 20 张
+插件        : 10 个
   - tieba      百度贴吧 v0.1.0
   ...
 ```
@@ -770,6 +773,10 @@ DELETE FROM TF_sign_tasks WHERE created_at < date('now','-90 day');
 | `CLOUD189_INTERACTION_REQUIRED` | 天翼云盘要求设备验证，先去网页端过一次 |
 | `SPORT_RATE_LIMITED` / `PICACOMIC_RATE_LIMITED` | 平台限流，降低执行频率 |
 | `BILIBILI_MEDAL_EMPTY` | 没有可挂机的粉丝牌 |
+| `UMA_API_ERROR` / `UMA_SIGN_FAILED` | 赛马娘接口异常或签到失败，检查 Cookie 后重试 |
+| `YAMIBO_WAF_BLOCKED` | Yamibo 触发 WAF，服务器无法执行浏览器挑战，请改用 Cookie 导入 |
+| `YAMIBO_LOGIN_FAILED` | Yamibo 用户名或密码错误，或登录页面结构变化 |
+| `V2EX_RESPONSE_INVALID` / `V2EX_SIGN_FAILED` | V2EX 页面结构变化或签到失败，检查 Cookie 后重试 |
 | `TASK_NOT_RETRYABLE` / `TASK_RETRY_EXHAUSTED` | 状态不允许重试 / 重试次数用完 |
 | `PLUGIN_ACCOUNT_DISABLED` | 账号被停用，启用后再执行 |
 
@@ -808,7 +815,7 @@ internal/
 ├── secure/             XChaCha20-Poly1305、argon2id、bcrypt 兼容、指纹
 ├── model/              表结构体
 ├── sign/               插件契约、注册表、HTTP 客户端、心跳签名
-├── plugins/            7 个平台插件（每个一个文件）
+├── plugins/            10 个平台插件（每个一个文件）
 ├── service/            业务服务（认证 / 账号 / 任务 / 邮件 / 后台 / 直播）
 ├── httpapi/            路由、中间件、handler
 ├── worker/             常驻任务池

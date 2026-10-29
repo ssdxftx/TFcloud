@@ -25,6 +25,9 @@ var platformConnections = map[string][]string{
 	"sport":     {"password"},
 	"cloud189":  {"password"},
 	"picacomic": {"password"},
+	"uma":       {"cookie"},
+	"yamibo":    {"password", "cookie"},
+	"v2ex":      {"cookie"},
 }
 
 var platformFieldLabels = map[string]string{
@@ -44,11 +47,16 @@ var platformFieldLabels = map[string]string{
 	"cloud189:password":           "天翼云盘密码",
 	"picacomic:username":          "哔咔登录邮箱",
 	"picacomic:password":          "哔咔密码",
+	"uma:cookie":                  "完整 Cookie（site、joy_jct、DedeUserID、SESSDATA）",
+	"yamibo:username":             "Yamibo 用户名",
+	"yamibo:password":             "Yamibo 密码",
+	"yamibo:cookie":               "论坛 Cookie（需已通过 WAF 验证）",
+	"v2ex:cookie":                 "完整 Cookie（PB3_SESSION、A2 等）",
 }
 
 func (s *PlatformService) List() []map[string]any {
 	out := []map[string]any{}
-	for _, code := range []string{"tieba", "bilibili", "netease", "iqiyi", "sport", "cloud189", "picacomic"} {
+	for _, code := range []string{"tieba", "bilibili", "netease", "iqiyi", "sport", "cloud189", "picacomic", "uma", "yamibo", "v2ex"} {
 		plugin, err := s.registry.Get(code)
 		if err != nil {
 			continue
@@ -61,7 +69,7 @@ func (s *PlatformService) List() []map[string]any {
 // ListDetailed 返回带凭据字段的完整目录，供前端一次拉齐。
 func (s *PlatformService) ListDetailed() []map[string]any {
 	out := []map[string]any{}
-	for _, code := range []string{"tieba", "bilibili", "netease", "iqiyi", "sport", "cloud189", "picacomic"} {
+	for _, code := range []string{"tieba", "bilibili", "netease", "iqiyi", "sport", "cloud189", "picacomic", "uma", "yamibo", "v2ex"} {
 		plugin, err := s.registry.Get(code)
 		if err != nil {
 			continue

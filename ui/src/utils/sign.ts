@@ -6,6 +6,9 @@ export const pluginNames: Record<string, string> = {
   sport: '小米运动',
   cloud189: '天翼云盘',
   picacomic: '哔咔漫画',
+  uma: '赛马娘',
+  yamibo: 'Yamibo（百合会 / 300）',
+  v2ex: 'V2EX',
 };
 
 export const actionNames: Record<string, string> = {
