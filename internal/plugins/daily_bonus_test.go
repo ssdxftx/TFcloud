@@ -76,25 +76,14 @@ func TestYamiboStatsParsesChineseLabels(t *testing.T) {
 	}
 }
 
-func TestYamiboCredentialShapeSupportsPasswordOrCookie(t *testing.T) {
-	p := &Yamibo{}
-	if err := p.ValidateCredentialShape(map[string]any{"cookie": "sid=1"}); err != nil {
-		t.Fatalf("Cookie 方式应通过: %v", err)
+func TestYamiboAccountParsesUsernameAndUID(t *testing.T) {
+	body := `<div id="um"><p><strong class="vwmy"><a href="home.php?mod=space&uid=123" target="_blank">百合用户</a></strong></p></div>`
+	info := yamiboAccount(body, "")
+	if info.UID != "123" || info.Username != "百合用户" {
+		t.Fatalf("账号信息解析错误: %#v", info)
 	}
-	if err := p.ValidateCredentialShape(map[string]any{"username": "user", "password": "pass"}); err != nil {
-		t.Fatalf("账号密码方式应通过: %v", err)
-	}
-	if err := p.ValidateCredentialShape(map[string]any{"username": "user"}); err == nil {
-		t.Fatal("缺少密码时应拒绝")
-	}
-}
-
-func TestYamiboLoginPagePatterns(t *testing.T) {
-	body := `<input type="hidden" name="formhash" value="a1b2c3d4" /><a href="member.php?mod=logging&amp;action=login&amp;loginhash=AbC123">登录</a>`
-	if match := yamiboFormHashPattern.FindStringSubmatch(body); len(match) < 2 || match[1] != "a1b2c3d4" {
-		t.Fatalf("formhash 解析失败: %#v", match)
-	}
-	if match := yamiboLoginHashPattern.FindStringSubmatch(body); len(match) < 2 || match[1] != "AbC123" {
-		t.Fatalf("loginhash 解析失败: %#v", match)
+	info = yamiboAccount(`<a href="space-uid-456.html">另一个用户</a>`, "discuz_uid=456; sid=x")
+	if info.UID != "456" || info.Username != "另一个用户" {
+		t.Fatalf("伪静态账号信息解析错误: %#v", info)
 	}
 }

@@ -26,7 +26,7 @@ var platformConnections = map[string][]string{
 	"cloud189":  {"password"},
 	"picacomic": {"password"},
 	"uma":       {"cookie"},
-	"yamibo":    {"password", "cookie"},
+	"yamibo":    {"cookie"},
 	"v2ex":      {"cookie"},
 }
 
@@ -48,8 +48,6 @@ var platformFieldLabels = map[string]string{
 	"picacomic:username":          "哔咔登录邮箱",
 	"picacomic:password":          "哔咔密码",
 	"uma:cookie":                  "完整 Cookie（site、joy_jct、DedeUserID、SESSDATA）",
-	"yamibo:username":             "Yamibo 用户名",
-	"yamibo:password":             "Yamibo 密码",
 	"yamibo:cookie":               "论坛 Cookie（需已通过 WAF 验证）",
 	"v2ex:cookie":                 "完整 Cookie（PB3_SESSION、A2 等）",
 }

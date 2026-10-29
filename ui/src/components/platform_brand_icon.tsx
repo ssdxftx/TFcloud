@@ -7,6 +7,7 @@ import iqiyiLogo from "@/assets/platforms/iqiyi.jpeg";
 import picacomicLogo from "@/assets/platforms/picacomic.jpeg";
 import sportLogo from "@/assets/platforms/sport.jpeg";
 import tiebaLogo from "@/assets/platforms/tieba.jpeg";
+import yamiboLogo from "@/assets/platforms/yamibo.webp";
 
 export const platformLogoByCode: Partial<Record<string, string>> = {
   tieba: tiebaLogo,
@@ -15,6 +16,7 @@ export const platformLogoByCode: Partial<Record<string, string>> = {
   sport: sportLogo,
   cloud189: cloud189Logo,
   picacomic: picacomicLogo,
+  yamibo: yamiboLogo,
 };
 
 export default function PlatformBrandIcon({

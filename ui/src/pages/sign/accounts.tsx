@@ -238,11 +238,6 @@ const passwordFieldMeta: Record<string, { username: string; password: string; de
     password: '哔咔密码',
     description: '使用哔咔漫画账号登录；密码与登录令牌均由服务器加密保存。',
   },
-  yamibo: {
-    username: 'Yamibo 用户名',
-    password: 'Yamibo 密码',
-    description: '服务器会直接登录 Discuz 论坛并保存会话 Cookie；若站点触发 WAF，请改用 Cookie 导入。',
-  },
 };
 
 export default function AccountsPage () {

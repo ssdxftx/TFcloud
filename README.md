@@ -511,7 +511,7 @@ data/
 | 天翼云盘 | 账号密码 | 手机号或邮箱 + 密码 | 直接填；若提示设备锁，先去网页端完成一次验证 |
 | 哔咔漫画 | 账号密码 | 邮箱 + 密码 | 直接填 |
 | 赛马娘 | Cookie 导入 | 合并的完整 Cookie（含 `site`、`joy_jct`、`DedeUserID`、`SESSDATA`） | 登录 uma.komoejoy.com → F12 → Application → Cookies 复制同名项 |
-| Yamibo（百合会 / 300） | 账号密码 / Cookie 导入 | 用户名 + 密码；或论坛完整 Cookie（含通过 WAF 后的 `nox_jst_v1`） | 直接填账号密码；若服务器登录被 WAF 拦截，浏览器通过验证后复制 Cookie |
+| Yamibo（百合会 / 300） | Cookie 导入 | 论坛完整 Cookie（需包含通过 WAF 后的 `nox_jst_v1` 等） | 浏览器登录 bbs.yamibo.com 并通过验证 → F12 → Cookies 复制 |
 | V2EX | Cookie 导入 | `PB3_SESSION`、`A2`（`V2EX_LANG`、`V2EX_TAB` 可选） | 登录 v2ex.com → F12 → Application → Cookies |
 
 **关于凭据安全**：所有凭据用 XChaCha20-Poly1305 加密后入库，AAD 绑定「插件 + 账号 ID + 类型」，
@@ -775,7 +775,6 @@ DELETE FROM TF_sign_tasks WHERE created_at < date('now','-90 day');
 | `BILIBILI_MEDAL_EMPTY` | 没有可挂机的粉丝牌 |
 | `UMA_API_ERROR` / `UMA_SIGN_FAILED` | 赛马娘接口异常或签到失败，检查 Cookie 后重试 |
 | `YAMIBO_WAF_BLOCKED` | Yamibo 触发 WAF，服务器无法执行浏览器挑战，请改用 Cookie 导入 |
-| `YAMIBO_LOGIN_FAILED` | Yamibo 用户名或密码错误，或登录页面结构变化 |
 | `V2EX_RESPONSE_INVALID` / `V2EX_SIGN_FAILED` | V2EX 页面结构变化或签到失败，检查 Cookie 后重试 |
 | `TASK_NOT_RETRYABLE` / `TASK_RETRY_EXHAUSTED` | 状态不允许重试 / 重试次数用完 |
 | `PLUGIN_ACCOUNT_DISABLED` | 账号被停用，启用后再执行 |

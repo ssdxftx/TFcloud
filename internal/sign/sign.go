@@ -139,12 +139,6 @@ type RefreshingValidator interface {
 	ValidateAccountWithRefresh(creds map[string]any) (*Profile, map[string]any, error)
 }
 
-// CredentialShapeValidator 用于同一平台支持多种凭据组合（例如账号密码或 Cookie）。
-// 实现后由插件自行判断必填字段，跳过框架默认的逐项必填检查。
-type CredentialShapeValidator interface {
-	ValidateCredentialShape(creds map[string]any) error
-}
-
 type Registry struct {
 	byCode map[string]Plugin
 	order  []string

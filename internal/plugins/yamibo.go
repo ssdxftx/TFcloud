@@ -2,16 +2,10 @@ package plugins
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"html"
-	"io"
-	"net/http"
-	"net/http/cookiejar"
-	"net/url"
 	"regexp"
 	"strings"
-	"time"
 
 	"tfcloud/internal/sign"
 )
@@ -26,7 +20,7 @@ func (p *Yamibo) Metadata() sign.Metadata {
 	return sign.Metadata{
 		Code: "yamibo", Name: "Yamibo（百合会 / 300）", Version: "0.1.0",
 		Description:     "Yamibo 论坛每日打卡，查询签到统计与账户积分",
-		CredentialTypes: []string{"cookie", "account_password"},
+		CredentialTypes: []string{"cookie"},
 		Status:          "ready",
 	}
 }
@@ -38,49 +32,36 @@ func (p *Yamibo) CredentialRules() []sign.CredentialRule {
 func (p *Yamibo) SupportedActions() []string { return []string{"daily_sign"} }
 
 func (p *Yamibo) ValidateAccount(creds map[string]any) (*sign.Profile, error) {
-	profile, _, err := p.ValidateAccountWithRefresh(creds)
-	return profile, err
-}
-
-func (p *Yamibo) ValidateCredentialShape(creds map[string]any) error {
-	if strings.TrimSpace(sign.ValueString(creds["cookie"])) != "" {
-		return nil
-	}
-	username := strings.TrimSpace(sign.ValueString(creds["username"]))
-	password := sign.ValueString(creds["password"])
-	if username != "" && password != "" {
-		return nil
-	}
-	return sign.Fail("PLUGIN_CREDENTIAL_INVALID", "缺少平台凭据：Cookie 或账号密码", 422)
-}
-
-func (p *Yamibo) ValidateAccountWithRefresh(creds map[string]any) (*sign.Profile, map[string]any, error) {
 	c := newYamiboClient(p.http, creds)
-	var refreshed map[string]any
-	if c.username != "" && c.password != "" {
-		cookie, err := c.login(context.Background(), c.username, c.password)
-		if err != nil {
-			return nil, nil, err
-		}
-		c.cookie = cookie
-		refreshed = map[string]any{"cookie": cookie}
-	}
 	if c.cookie == "" {
-		return nil, nil, sign.Fail("PLUGIN_CREDENTIAL_INVALID", "缺少平台凭据：cookie", 422)
+		return nil, sign.Fail("PLUGIN_CREDENTIAL_INVALID", "缺少平台凭据：cookie", 422)
 	}
 	page, err := c.signPage(context.Background())
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	uid := yamiboCookieValue(c.cookie, "discuz_uid")
-	if uid == "" {
-		uid = yamiboCookieValue(c.cookie, "uid")
+	account := yamiboAccount(page.text, c.cookie)
+	if account.Username == "" {
+		if text, err := c.creditPage(context.Background()); err == nil {
+			account = mergeYamiboAccount(account, yamiboAccount(text, c.cookie))
+		}
 	}
-	name := "Yamibo 账号"
-	if uid != "" {
-		name = "Yamibo · " + uid
+	name := account.Username
+	if name == "" {
+		name = "Yamibo 账号"
+		if account.UID != "" {
+			name = "Yamibo · " + account.UID
+		}
 	}
-	return &sign.Profile{ExternalID: uid, DisplayName: name, Extra: map[string]any{"signed_today": page.alreadySigned}}, refreshed, nil
+	return &sign.Profile{
+		ExternalID:  account.UID,
+		DisplayName: name,
+		Extra: map[string]any{
+			"username":     account.Username,
+			"uid":          account.UID,
+			"signed_today": page.alreadySigned,
+		},
+	}, nil
 }
 
 func (p *Yamibo) Execute(ctx context.Context, c *sign.Context) (*sign.Result, error) {
@@ -88,35 +69,18 @@ func (p *Yamibo) Execute(ctx context.Context, c *sign.Context) (*sign.Result, er
 		return nil, sign.Fail("PLUGIN_ACTION_NOT_SUPPORTED", "Yamibo 插件不支持该动作", 400)
 	}
 	client := newYamiboClient(p.http, c.Credentials)
-	refreshed := map[string]any{}
 	if client.cookie == "" {
-		if client.username == "" || client.password == "" {
-			return nil, sign.Fail("PLUGIN_CREDENTIAL_INVALID", "缺少平台凭据：Cookie 或账号密码", 422)
-		}
-		cookie, err := client.login(ctx, client.username, client.password)
-		if err != nil {
-			return nil, err
-		}
-		client.cookie = cookie
-		refreshed["cookie"] = cookie
+		return nil, sign.Fail("PLUGIN_CREDENTIAL_INVALID", "缺少平台凭据：cookie", 422)
 	}
 
 	page, err := client.signPage(ctx)
-	if err != nil && isYamiboCredentialExpired(err) && client.username != "" && client.password != "" {
-		cookie, loginErr := client.login(ctx, client.username, client.password)
-		if loginErr != nil {
-			return nil, loginErr
-		}
-		client.cookie = cookie
-		refreshed["cookie"] = cookie
-		page, err = client.signPage(ctx)
-	}
 	if err != nil {
 		return nil, err
 	}
+	account := yamiboAccount(page.text, client.cookie)
 	record := sign.Record{
 		Key: "yamibo:daily_sign", Action: "daily_sign", Status: "succeeded",
-		TargetType: "account", TargetName: "Yamibo", Message: "打卡成功",
+		TargetType: "account", TargetName: firstText(account.Username, "Yamibo"), Message: "打卡成功",
 	}
 	pageText := page.text
 	switch {
@@ -135,6 +99,7 @@ func (p *Yamibo) Execute(ctx context.Context, c *sign.Context) (*sign.Result, er
 			if latest, err := client.signPage(ctx); err == nil {
 				page = latest
 				pageText = latest.text
+				account = mergeYamiboAccount(account, yamiboAccount(latest.text, client.cookie))
 			}
 		}
 	default:
@@ -144,7 +109,14 @@ func (p *Yamibo) Execute(ctx context.Context, c *sign.Context) (*sign.Result, er
 	}
 
 	stats := yamiboStats(pageText)
-	credit, creditErr := client.credit(ctx)
+	creditText, creditErr := client.creditPage(ctx)
+	credit := yamiboCredit(creditText)
+	if account.Username == "" {
+		account = mergeYamiboAccount(account, yamiboAccount(creditText, client.cookie))
+	}
+	if account.Username != "" {
+		record.TargetName = account.Username
+	}
 	rewards := map[string]any{}
 	for key, value := range stats {
 		rewards[key] = value
@@ -177,9 +149,9 @@ func (p *Yamibo) Execute(ctx context.Context, c *sign.Context) (*sign.Result, er
 	if record.Status == "failed" {
 		result.Status = "failed"
 	}
-	result.Summary = map[string]any{"stats": stats, "credit": credit}
-	if len(refreshed) > 0 {
-		result.Credentials = refreshed
+	result.Summary = map[string]any{"stats": stats, "credit": credit, "username": account.Username, "uid": account.UID}
+	if account.Username != "" || account.UID != "" {
+		result.ProfilePatch = map[string]any{"username": account.Username, "uid": account.UID, "display_name": account.Username}
 	}
 	return result, nil
 }
@@ -187,19 +159,12 @@ func (p *Yamibo) Execute(ctx context.Context, c *sign.Context) (*sign.Result, er
 // ---------- 客户端 ----------
 
 type yamiboClient struct {
-	http     *sign.HTTP
-	cookie   string
-	username string
-	password string
+	http   *sign.HTTP
+	cookie string
 }
 
 func newYamiboClient(h *sign.HTTP, creds map[string]any) *yamiboClient {
-	return &yamiboClient{
-		http:     h,
-		cookie:   strings.TrimSpace(sign.ValueString(creds["cookie"])),
-		username: strings.TrimSpace(sign.ValueString(creds["username"])),
-		password: sign.ValueString(creds["password"]),
-	}
+	return &yamiboClient{http: h, cookie: strings.TrimSpace(sign.ValueString(creds["cookie"]))}
 }
 
 func yamiboCookieValue(cookie, key string) string {
@@ -211,163 +176,6 @@ func yamiboCookieValue(cookie, key string) string {
 		}
 	}
 	return ""
-}
-
-func (c *yamiboClient) login(ctx context.Context, username, password string) (string, error) {
-	if username == "" || password == "" {
-		return "", sign.Fail("PLUGIN_CREDENTIAL_INVALID", "缺少 Yamibo 用户名或密码", 422)
-	}
-	jar, err := cookiejar.New(nil)
-	if err != nil {
-		return "", sign.Fail("INTERNAL_ERROR", "初始化登录会话失败", 500)
-	}
-	client := &http.Client{Timeout: 25 * time.Second, Jar: jar}
-	base, err := url.Parse(yamiboBaseURL)
-	if err != nil {
-		return "", sign.Fail("INTERNAL_ERROR", "Yamibo 地址无效", 500)
-	}
-	headers := yamiboRequestHeaders()
-	do := func(req *http.Request) (int, []byte, error) {
-		for key, value := range headers {
-			req.Header.Set(key, value)
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			return 0, nil, sign.Fail("UPSTREAM_REQUEST_FAILED", "访问 Yamibo 失败", 502)
-		}
-		defer resp.Body.Close()
-		body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-		if err != nil {
-			return 0, nil, sign.Fail("UPSTREAM_REQUEST_FAILED", "读取 Yamibo 响应失败", 502)
-		}
-		return resp.StatusCode, body, nil
-	}
-	checkStatus := func(status int) error {
-		switch {
-		case status == 403 || status == 405 || status == 412:
-			return sign.Fail("YAMIBO_WAF_BLOCKED", "Yamibo 触发了 WAF 验证，服务器无法执行浏览器挑战，请改用 Cookie 导入", 502)
-		case status == 429 || status >= 500:
-			return sign.Fail("UPSTREAM_REQUEST_FAILED", "Yamibo 服务暂时不可用", 502)
-		}
-		return nil
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, yamiboBaseURL+"/forum.php", nil)
-	if err != nil {
-		return "", sign.Fail("UPSTREAM_REQUEST_FAILED", "创建登录请求失败", 502)
-	}
-	status, _, err := do(req)
-	if err != nil {
-		return "", err
-	}
-	if err := checkStatus(status); err != nil {
-		return "", err
-	}
-
-	loginQuery := url.Values{
-		"mod":         {"logging"},
-		"action":      {"login"},
-		"infloat":     {"yes"},
-		"frommessage": {""},
-		"inajax":      {"1"},
-		"ajaxtarget":  {"messagelogin"},
-	}
-	loginURL := yamiboBaseURL + "/member.php?" + loginQuery.Encode()
-	req, err = http.NewRequestWithContext(ctx, http.MethodGet, loginURL, nil)
-	if err != nil {
-		return "", sign.Fail("UPSTREAM_REQUEST_FAILED", "创建登录请求失败", 502)
-	}
-	status, body, err := do(req)
-	if err != nil {
-		return "", err
-	}
-	if err := checkStatus(status); err != nil {
-		return "", err
-	}
-	text := string(body)
-	formhash := ""
-	if match := yamiboFormHashPattern.FindStringSubmatch(text); len(match) > 1 {
-		formhash = match[1]
-	}
-	if formhash == "" {
-		return "", sign.Fail("YAMIBO_LOGIN_FAILED", "无法获取登录参数，站点可能触发了 WAF 验证", 502)
-	}
-	loginhash := ""
-	if match := yamiboLoginHashPattern.FindStringSubmatch(text); len(match) > 1 {
-		loginhash = match[1]
-	}
-
-	postQuery := url.Values{
-		"mod":         {"logging"},
-		"action":      {"login"},
-		"loginsubmit": {"yes"},
-		"frommessage": {""},
-		"loginhash":   {loginhash},
-		"inajax":      {"1"},
-	}
-	form := url.Values{
-		"formhash":   {formhash},
-		"referer":    {yamiboBaseURL + "/forum.php"},
-		"username":   {username},
-		"password":   {password},
-		"questionid": {"0"},
-		"answer":     {""},
-		"cookietime": {"2592000"},
-	}
-	req, err = http.NewRequestWithContext(ctx, http.MethodPost, yamiboBaseURL+"/member.php?"+postQuery.Encode(), strings.NewReader(form.Encode()))
-	if err != nil {
-		return "", sign.Fail("UPSTREAM_REQUEST_FAILED", "创建登录请求失败", 502)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	status, body, err = do(req)
-	if err != nil {
-		return "", err
-	}
-	if err := checkStatus(status); err != nil {
-		return "", err
-	}
-	text = string(body)
-	if strings.Contains(text, "succeedhandle") || strings.Contains(text, "succeed") {
-		cookie := yamiboJarCookie(jar, base)
-		if cookie == "" {
-			return "", sign.Fail("YAMIBO_LOGIN_FAILED", "登录成功但未获取到 Cookie", 502)
-		}
-		return cookie, nil
-	}
-	if strings.Contains(text, "登录失败") {
-		message := "Yamibo 用户名或密码错误"
-		if match := yamiboErrorMessagePattern.FindStringSubmatch(text); len(match) > 1 {
-			if value := strings.TrimSpace(html.UnescapeString(match[1])); value != "" {
-				message = value
-			}
-		}
-		return "", sign.Fail("YAMIBO_LOGIN_FAILED", message, 422)
-	}
-	return "", sign.Fail("YAMIBO_LOGIN_FAILED", "Yamibo 登录失败，页面结构可能已变更", 502)
-}
-
-func yamiboRequestHeaders() map[string]string {
-	return map[string]string{
-		"Accept":           "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-		"Accept-Language":  "zh-CN,zh;q=0.9,en;q=0.8",
-		"Origin":           yamiboBaseURL,
-		"Referer":          yamiboBaseURL + "/",
-		"User-Agent":       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
-		"X-Requested-With": "XMLHttpRequest",
-	}
-}
-
-func yamiboJarCookie(jar http.CookieJar, base *url.URL) string {
-	parts := []string{}
-	for _, cookie := range jar.Cookies(base) {
-		parts = append(parts, cookie.Name+"="+cookie.Value)
-	}
-	return strings.Join(parts, "; ")
-}
-
-func isYamiboCredentialExpired(err error) bool {
-	var target *sign.Error
-	return errors.As(err, &target) && target.Code == "PLUGIN_CREDENTIAL_EXPIRED"
 }
 
 func (c *yamiboClient) get(ctx context.Context, path, referer string) (*sign.Response, error) {
@@ -450,32 +258,36 @@ func (c *yamiboClient) checkIn(ctx context.Context, hash string) (yamiboSignResu
 	}
 }
 
-func (c *yamiboClient) credit(ctx context.Context) (string, error) {
+func (c *yamiboClient) creditPage(ctx context.Context) (string, error) {
 	resp, err := c.get(ctx, "/home.php?mod=spacecp&ac=credit", yamiboBaseURL+"/plugin.php?id=zqlj_sign")
 	if err != nil {
 		return "", err
 	}
-	block := yamiboCreditBlock.FindStringSubmatch(string(resp.Body))
+	return string(resp.Body), nil
+}
+
+func yamiboCredit(text string) string {
+	block := yamiboCreditBlock.FindStringSubmatch(text)
 	if len(block) < 2 {
-		return "", nil
+		return ""
 	}
 	seen := map[string]bool{}
 	parts := []string{}
 	for _, item := range yamiboCreditItem.FindAllStringSubmatch(block[1], -1) {
-		text := strings.TrimSpace(html.UnescapeString(yamiboTagPattern.ReplaceAllString(item[1], "")))
-		idx := strings.IndexAny(text, ":：")
+		value := strings.TrimSpace(html.UnescapeString(yamiboTagPattern.ReplaceAllString(item[1], "")))
+		idx := strings.IndexAny(value, ":：")
 		if idx <= 0 {
 			continue
 		}
-		name := strings.TrimSpace(text[:idx])
-		value := strings.TrimSpace(strings.TrimLeft(text[idx:], ":："))
-		if name == "" || value == "" || seen[name] {
+		name := strings.TrimSpace(value[:idx])
+		amount := strings.TrimSpace(strings.TrimLeft(value[idx:], ":："))
+		if name == "" || amount == "" || seen[name] {
 			continue
 		}
 		seen[name] = true
-		parts = append(parts, fmt.Sprintf("%s %s", name, value))
+		parts = append(parts, fmt.Sprintf("%s %s", name, amount))
 	}
-	return strings.Join(parts, "，"), nil
+	return strings.Join(parts, "，")
 }
 
 func yamiboStats(text string) map[string]string {
@@ -486,14 +298,54 @@ func yamiboStats(text string) map[string]string {
 	return out
 }
 
+type yamiboAccountInfo struct {
+	UID      string
+	Username string
+}
+
+func yamiboAccount(text, cookie string) yamiboAccountInfo {
+	info := yamiboAccountInfo{
+		UID: yamiboCookieValue(cookie, "discuz_uid"),
+	}
+	if info.UID == "" {
+		info.UID = yamiboCookieValue(cookie, "uid")
+	}
+	if match := yamiboProfileNamePattern.FindStringSubmatch(text); len(match) > 1 {
+		info.Username = strings.TrimSpace(html.UnescapeString(match[1]))
+	}
+	for _, match := range yamiboProfileLinkPattern.FindAllStringSubmatch(text, -1) {
+		uid := strings.TrimSpace(match[1])
+		name := strings.TrimSpace(html.UnescapeString(match[2]))
+		if info.UID == "" && uid != "" {
+			info.UID = uid
+		}
+		if info.Username == "" && name != "" && name != "匿名" {
+			info.Username = name
+		}
+		if info.UID != "" && info.Username != "" {
+			break
+		}
+	}
+	return info
+}
+
+func mergeYamiboAccount(base, patch yamiboAccountInfo) yamiboAccountInfo {
+	if base.UID == "" {
+		base.UID = patch.UID
+	}
+	if base.Username == "" {
+		base.Username = patch.Username
+	}
+	return base
+}
+
 var (
-	yamiboSignPattern         = regexp.MustCompile(`sign=([a-f0-9]+)`)
-	yamiboButtonPattern       = regexp.MustCompile(`class="btna"[^>]*>([^<]+)<`)
-	yamiboCreditBlock         = regexp.MustCompile(`(?s)<ul class="creditl mtm bbda cl">(.*?)</ul>`)
-	yamiboCreditItem          = regexp.MustCompile(`(?s)<li[^>]*>(.*?)</li>`)
-	yamiboTagPattern          = regexp.MustCompile(`<[^>]*>`)
-	yamiboStatsPattern        = regexp.MustCompile(`(最近打卡|本月打卡|连续打卡|累计打卡|最近奖励)：([^<]+)`)
-	yamiboFormHashPattern     = regexp.MustCompile(`name="formhash"\s+value="([a-f0-9]+)"`)
-	yamiboLoginHashPattern    = regexp.MustCompile(`loginhash=([a-zA-Z0-9]+)`)
-	yamiboErrorMessagePattern = regexp.MustCompile(`<p[^>]*>([^<]+)</p>`)
+	yamiboSignPattern        = regexp.MustCompile(`sign=([a-f0-9]+)`)
+	yamiboButtonPattern      = regexp.MustCompile(`class="btna"[^>]*>([^<]+)<`)
+	yamiboCreditBlock        = regexp.MustCompile(`(?s)<ul class="creditl mtm bbda cl">(.*?)</ul>`)
+	yamiboCreditItem         = regexp.MustCompile(`(?s)<li[^>]*>(.*?)</li>`)
+	yamiboTagPattern         = regexp.MustCompile(`<[^>]*>`)
+	yamiboStatsPattern       = regexp.MustCompile(`(最近打卡|本月打卡|连续打卡|累计打卡|最近奖励)：([^<]+)`)
+	yamiboProfileLinkPattern = regexp.MustCompile(`(?s)<a[^>]+href="(?:home\.php\?mod=space&(?:amp;)?uid=|space-uid-)(\d+)[^"]*"[^>]*>([^<]+)</a>`)
+	yamiboProfileNamePattern = regexp.MustCompile(`(?s)class="vwmy"[^>]*>\s*<a[^>]*>([^<]+)</a>`)
 )
