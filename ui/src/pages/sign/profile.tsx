@@ -303,14 +303,15 @@ export default function ProfilePage () {
               onSelectionChange={(keys) => setPush((current) => ({ ...current, push_channel: String(Array.from(keys)[0] || 'none') }))}
             >
               <SelectItem key='none'>关闭推送</SelectItem>
+              <SelectItem key='wecom' description='企业微信群机器人，填写 Webhook key'>企业微信机器人</SelectItem>
               <SelectItem key='pushplus' description='微信公众号推送，pushplus.plus 免费申请'>PushPlus（微信）</SelectItem>
               <SelectItem key='serverchan' description='微信推送，sct.ftqq.com 获取 SendKey'>Server酱（微信）</SelectItem>
-              <SelectItem key='bark' description='iPhone 通知推送，填写 Bark Key 或完整推送地址'>Bark（iOS）</SelectItem>
+              <SelectItem key='bark' description='iPhone 通知推送，填写 Bark Key 或 https://api.day.app/xxxx'>Bark（iOS）</SelectItem>
             </Select>
             <Input
               label='推送令牌'
               isDisabled={push.push_channel === 'none'}
-              placeholder={push.push_channel === 'pushplus' ? 'PushPlus Token' : push.push_channel === 'serverchan' ? 'SendKey（SCT 或 sctp 开头）' : push.push_channel === 'bark' ? 'Bark Key 或 https://api.day.app/xxxx' : '请先选择推送渠道'}
+              placeholder={push.push_channel === 'wecom' ? '企业微信机器人 Webhook key' : push.push_channel === 'pushplus' ? 'PushPlus Token' : push.push_channel === 'serverchan' ? 'SendKey（SCT 或 sctp 开头）' : push.push_channel === 'bark' ? 'Bark Key 或 https://api.day.app/xxxx' : '请先选择推送渠道'}
               value={push.push_token}
               onValueChange={(value) => setPush((current) => ({ ...current, push_token: value }))}
             />

@@ -73,7 +73,7 @@
 
 - QQ 快捷登录 / 中转：接口保留但返回 `QQ_LOGIN_UNAVAILABLE`，中转协议尚未移植；
 - 平台扫码 / 短信登录：未移植，`/platforms` 只下发已实现的方式（账号密码或 Cookie/BDUSS 导入）；
-- 站内推送（微信 / Server酱）：字段保留，实际投递走邮件；
+- 站内推送：支持企业微信机器人、Server酱、PushPlus、Bark，测试按钮会真实投递；
 - 插件按原逻辑 1:1 移植，已在贴吧真机验证通过，其余平台建议先单次执行确认。
 
 ---
@@ -571,7 +571,7 @@ data/
 在 B 站账号的设置里开启「粉丝牌挂机」，任务会进入独立的 `bilibili_live` 队列：
 
 发现勋章 → 逐个进入直播间 → 按服务端下发间隔发签名心跳 → 进度落盘 → 汇总结算。
-默认目标 70 次心跳 / 最多 5 个房间，可调；会话最长 40 分钟。
+默认目标 70 次心跳 / 最多 5 个房间，可调；会话时长按「房间数 × 目标心跳」估算，下限 40 分钟、上限 8 小时。
 
 ---
 
@@ -639,6 +639,7 @@ data/
 | `CREDENTIAL_KEY_VERSION` | `1` | 密钥版本号，轮换时递增 |
 | `SESSION_SECURE` | 按站点地址推断 | HTTPS 下必须为 `true` |
 | `CORS_ALLOWED_ORIGINS` | 空 | 同源部署留空；分离部署填逗号分隔的源 |
+| `TRUSTED_PROXY_CIDRS` | `127.0.0.0/8,::1/128` | 允许提供 `X-Forwarded-For` 等转发头的代理网段；Docker 内 Nginx 反代时按实际网关配置 |
 | `SIGN_WORKER_ENABLED` | `true` | 是否启用签到 Worker |
 | `SIGN_WORKER_COUNT` | CPU/2，上限 8 | 签到并发数 |
 | `SIGN_SCHEDULER_ENABLED` | `true` | 是否启用调度器 |
@@ -728,7 +729,7 @@ DELETE FROM TF_sign_tasks WHERE created_at < date('now','-90 day');
 |---|---|
 | 账号少（< 20） | 默认即可，1 核 512MB 足够 |
 | 账号多（> 100） | `SIGN_WORKER_COUNT` 提到 4–8，注意平台侧频控 |
-| B 站挂机多 | `BILIBILI_LIVE_WORKER_COUNT` 提到 3–4，单会话最长 40 分钟 |
+| B 站挂机多 | `BILIBILI_LIVE_WORKER_COUNT` 提到 3–4；单会话时长按房间数和心跳数估算，最长 8 小时 |
 | 磁盘 IO 弱 | 保持 `synchronous=NORMAL`（默认），不要改 FULL |
 | 反向代理慢 | 静态资源已带 `immutable` 缓存，务必让 Nginx/Caddy 透传而非二次缓冲 |
 

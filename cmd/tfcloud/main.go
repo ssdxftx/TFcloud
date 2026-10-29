@@ -16,6 +16,7 @@ import (
 	"tfcloud/internal/config"
 	"tfcloud/internal/database"
 	"tfcloud/internal/httpapi"
+	"tfcloud/internal/httpapi/middleware"
 	"tfcloud/internal/plugins"
 	"tfcloud/internal/secure"
 	"tfcloud/internal/service"
@@ -97,6 +98,7 @@ func bootstrap() (*app, error) {
 	if err != nil {
 		return nil, err
 	}
+	middleware.SetTrustedProxies(cfg.TrustedProxyCIDRs)
 	store, err := database.Open(cfg.Database)
 	if err != nil {
 		return nil, err

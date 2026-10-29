@@ -208,7 +208,7 @@ func (c *picaClient) authenticate(ctx context.Context) (map[string]any, error) {
 func (c *picaClient) profile(ctx context.Context, token string) (map[string]any, error) {
 	data, err := c.apiRequest(ctx, "GET", "users/profile", nil, token, false)
 	if err != nil {
-		if e, ok := err.(*sign.Error); ok && (e.Code == "PICACOMIC_UNAUTHORIZED" || e.Code == "PICACOMIC_API_ERROR") {
+		if e, ok := err.(*sign.Error); ok && e.Code == "PICACOMIC_UNAUTHORIZED" {
 			return nil, sign.Fail("PLUGIN_CREDENTIAL_EXPIRED", "哔咔登录状态已经失效", 422)
 		}
 		return nil, err

@@ -26,6 +26,7 @@ import { toast } from "react-hot-toast";
 import { LuMailCheck, LuRefreshCw, LuSave, LuSearch, LuSend, LuTrash2 } from "react-icons/lu";
 
 import { apiRequest } from "@/api/client";
+import { useSite } from '@/contexts/site';
 import { confirmCard } from "@/components/confirm_card";
 import StatusChip from "@/components/sign/status_chip";
 import type {
@@ -66,6 +67,7 @@ const templateOptions = [
 ];
 
 export default function AdminMailPage() {
+  useSite();
   const [summary, setSummary] = useState<MailSummary | null>(null);
   const [tasks, setTasks] = useState<Paginated<MailTask> | null>(null);
   const [config, setConfig] = useState<MailSettings>(defaults);

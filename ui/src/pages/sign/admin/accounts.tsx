@@ -11,6 +11,7 @@ import { toast } from 'react-hot-toast';
 import { LuEllipsis, LuPlay, LuSearch, LuTrash2 } from 'react-icons/lu';
 
 import { apiRequest } from '@/api/client';
+import { useSite } from '@/contexts/site';
 import { confirmCard } from '@/components/confirm_card';
 import PlatformBrandIcon from '@/components/platform_brand_icon';
 import StatusChip from '@/components/sign/status_chip';
@@ -18,6 +19,7 @@ import type { Paginated, Plugin, PluginAccount, SignTask } from '@/types/sign';
 import { actionNames, errorMessage, formatDateTime, pluginNames } from '@/utils/sign';
 
 export default function AdminAccountsPage () {
+  useSite();
   const [result, setResult] = useState<Paginated<PluginAccount> | null>(null);
   const [plugins, setPlugins] = useState<Plugin[]>([]);
   const [page, setPage] = useState(1);

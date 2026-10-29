@@ -321,18 +321,20 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) testPush(w http.ResponseWriter, r *http.Request) {
+	if err := s.Auth.TestPush(userID(r)); err != nil {
+		if _, ok := err.(*respond.APIError); ok {
+			respond.Fail(w, r, err)
+		} else {
+			respond.Fail(w, r, respond.NewError("PUSH_DELIVERY_FAILED", err.Error(), 502))
+		}
+		return
+	}
 	me, err := s.Auth.PublicUser(userID(r))
 	if err != nil {
 		respond.Fail(w, r, err)
 		return
 	}
-	channel := strOf(me["push_channel"])
-	if channel == "none" || channel == "" {
-		respond.Fail(w, r, respond.NewError("PUSH_NOT_CONFIGURED", "尚未配置推送渠道", 422))
-		return
-	}
-	respond.Message(w, r, map[string]any{"channel": channel, "delivered": false},
-		"推送渠道已保存；本版本仅支持邮件通知，站内推送将在后续版本接入")
+	respond.Message(w, r, map[string]any{"channel": strOf(me["push_channel"]), "delivered": true}, "测试推送已发送")
 }
 
 // ---------- QQ 快捷登录 ----------

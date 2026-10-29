@@ -11,6 +11,7 @@ import { LuEye, LuRefreshCw, LuSquare } from 'react-icons/lu';
 import { useNavigate } from 'react-router-dom';
 
 import { apiRequest } from '@/api/client';
+import { useSite } from '@/contexts/site';
 import StatusChip from '@/components/sign/status_chip';
 import type { Paginated, Platform, SignTask } from '@/types/sign';
 import { actionNames, errorMessage, formatDateTime, pluginNames, shortTaskNo } from '@/utils/sign';
@@ -18,6 +19,7 @@ import { actionNames, errorMessage, formatDateTime, pluginNames, shortTaskNo } f
 const perPage = 15;
 
 export default function TasksPage () {
+  useSite();
   const [result, setResult] = useState<Paginated<SignTask> | null>(null);
   const [platforms, setPlatforms] = useState<Platform[]>([]);
   const [loading, setLoading] = useState(true);

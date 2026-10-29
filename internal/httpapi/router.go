@@ -21,6 +21,7 @@ func (s *Server) Router(static http.Handler) http.Handler {
 	r.Use(s.mw().Recover)
 	r.Use(s.mw().CORSHandler)
 	r.Use(s.mw().InstallGuard)
+	r.Use(s.mw().MaintenanceGuard)
 	r.Use(chimw.Timeout(180 * time.Second))
 
 	// 健康检查
@@ -183,10 +184,11 @@ func (s *Server) Router(static http.Handler) http.Handler {
 
 func (s *Server) mw() *middleware.Middleware {
 	return &middleware.Middleware{
-		Auth:      s.Auth,
-		Installed: s.Cfg.IsInstalled,
-		CORS:      func() []string { return s.Cfg.AllowedOrigins() },
-		Logger:    s.Logger,
+		Auth:        s.Auth,
+		Installed:   s.Cfg.IsInstalled,
+		Maintenance: func() bool { return truthyValue(s.Settings.Group("site")["maintenance_mode"]) },
+		CORS:        func() []string { return s.Cfg.AllowedOrigins() },
+		Logger:      s.Logger,
 	}
 }
 

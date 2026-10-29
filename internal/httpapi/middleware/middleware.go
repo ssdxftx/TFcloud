@@ -72,10 +72,11 @@ func ExtractToken(r *http.Request) string {
 }
 
 type Middleware struct {
-	Auth      Authenticator
-	Installed func() bool
-	CORS      func() []string
-	Logger    *slog.Logger
+	Auth        Authenticator
+	Installed   func() bool
+	Maintenance func() bool
+	CORS        func() []string
+	Logger      *slog.Logger
 }
 
 func (m *Middleware) corsOrigins() []string {
@@ -193,6 +194,33 @@ func (m *Middleware) InstallGuard(next http.Handler) http.Handler {
 	})
 }
 
+// MaintenanceGuard 在维护模式下阻止普通用户访问业务接口，管理员仍然可以进入后台处理事务。
+func (m *Middleware) MaintenanceGuard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if m.Maintenance == nil || !m.Maintenance() {
+			next.ServeHTTP(w, r)
+			return
+		}
+		p := r.URL.Path
+		allowed := p == "/api/site" || strings.HasPrefix(p, "/api/install") ||
+			strings.HasPrefix(p, "/api/auth/") || !strings.HasPrefix(p, "/api/")
+		if allowed {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if token := ExtractToken(r); token != "" && m.Auth != nil {
+			if principal, err := m.Auth.Authenticate(token, ClientIP(r)); err == nil && principal.IsAdmin() {
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+		respond.JSON(w, http.StatusServiceUnavailable, respond.Envelope{
+			Code: "MAINTENANCE", Message: "站点正在维护，请稍后再试",
+			RequestID: respond.RequestID(r.Context()),
+		})
+	})
+}
+
 func (m *Middleware) AuthRequired(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := ExtractToken(r)
@@ -222,28 +250,64 @@ func (m *Middleware) AdminRequired(next http.Handler) http.Handler {
 	})
 }
 
+var (
+	trustedProxyMu   sync.RWMutex
+	trustedProxyNets []*net.IPNet
+)
+
+func init() {
+	SetTrustedProxies([]string{"127.0.0.0/8", "::1/128"})
+}
+
+// SetTrustedProxies 配置允许提供转发头的代理网段。默认只信任本机回环地址；
+// 使用宿主机 Nginx/Caddy 反向代理容器时，应显式配置代理所在网段。
+func SetTrustedProxies(cidrs []string) {
+	nets := make([]*net.IPNet, 0, len(cidrs))
+	for _, cidr := range cidrs {
+		if _, network, err := net.ParseCIDR(strings.TrimSpace(cidr)); err == nil {
+			nets = append(nets, network)
+		}
+	}
+	trustedProxyMu.Lock()
+	trustedProxyNets = nets
+	trustedProxyMu.Unlock()
+}
+
 func ClientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
 	}
-	// 只有来自本机/内网代理的请求才信任转发头，避免公网直连伪造 IP 绕过限流。
 	if !isTrustedProxy(host) {
 		return host
 	}
-	if v := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); v != "" {
+	if v := forwardedIP(r.Header.Get("CF-Connecting-IP")); v != "" {
 		return v
 	}
-	if v := strings.TrimSpace(r.Header.Get("X-Real-IP")); v != "" {
+	if v := forwardedIP(r.Header.Get("X-Real-IP")); v != "" {
 		return v
 	}
 	if v := r.Header.Get("X-Forwarded-For"); v != "" {
+		first := v
 		if idx := strings.Index(v, ","); idx > 0 {
-			return strings.TrimSpace(v[:idx])
+			first = v[:idx]
 		}
-		return strings.TrimSpace(v)
+		if value := forwardedIP(first); value != "" {
+			return value
+		}
 	}
 	return host
+}
+
+func forwardedIP(value string) string {
+	value = strings.TrimSpace(value)
+	if host, _, err := net.SplitHostPort(value); err == nil {
+		value = host
+	}
+	if net.ParseIP(value) == nil {
+		return ""
+	}
+	return value
 }
 
 func isTrustedProxy(host string) bool {
@@ -251,7 +315,14 @@ func isTrustedProxy(host string) bool {
 	if ip == nil {
 		return false
 	}
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
+	trustedProxyMu.RLock()
+	defer trustedProxyMu.RUnlock()
+	for _, network := range trustedProxyNets {
+		if network.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // RateLimiter 是进程内的固定窗口限流，用于登录/验证码等敏感接口。

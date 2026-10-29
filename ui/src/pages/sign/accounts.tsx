@@ -15,6 +15,7 @@ import {
 import { useSearchParams } from 'react-router-dom';
 
 import { apiRequest } from '@/api/client';
+import { useSite } from '@/contexts/site';
 import { confirmCard } from '@/components/confirm_card';
 import PlatformBrandIcon, { platformLogoByCode } from '@/components/platform_brand_icon';
 import StatusChip from '@/components/sign/status_chip';
@@ -210,6 +211,7 @@ const passwordFieldMeta: Record<string, { username: string; password: string; de
 };
 
 export default function AccountsPage () {
+  useSite();
   const [accounts, setAccounts] = useState<PluginAccount[]>([]);
   const [platforms, setPlatforms] = useState<Platform[]>([]);
   const [details, setDetails] = useState<Record<string, PlatformDetail>>({});

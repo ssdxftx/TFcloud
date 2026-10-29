@@ -86,6 +86,12 @@ func (c *neteaseClient) profile(ctx context.Context) (*sign.Profile, error) {
 	if err != nil {
 		return nil, err
 	}
+	if resp.Status == 0 || resp.Status == 429 || resp.Status >= 500 {
+		return nil, sign.Fail("UPSTREAM_REQUEST_FAILED", "网易云音乐服务暂时不可用", 502)
+	}
+	if resp.JSON == nil {
+		return nil, sign.Fail("NETEASE_RESPONSE_INVALID", "网易云音乐返回了无法识别的响应", 502)
+	}
 	account := sign.Map(resp.JSON["account"])
 	if sign.ValueInt(resp.JSON["code"]) != 200 || account == nil || sign.ValueString(account["id"]) == "" {
 		return nil, sign.Fail("PLUGIN_CREDENTIAL_EXPIRED", "网易云音乐登录状态已经失效", 422)
@@ -288,8 +294,18 @@ func (c *iqiyiClient) profile(ctx context.Context) (*sign.Profile, error) {
 	if err != nil {
 		return nil, err
 	}
-	if sign.ValueString(resp.JSON["code"]) != "A00000" {
+	if resp.Status == 0 || resp.Status == 429 || resp.Status >= 500 {
+		return nil, sign.Fail("UPSTREAM_REQUEST_FAILED", "爱奇艺服务暂时不可用", 502)
+	}
+	if resp.JSON == nil {
+		return nil, sign.Fail("IQIYI_RESPONSE_INVALID", "爱奇艺返回了无法识别的响应", 502)
+	}
+	code := sign.ValueString(resp.JSON["code"])
+	if code == "A00401" {
 		return nil, sign.Fail("PLUGIN_CREDENTIAL_EXPIRED", "爱奇艺登录状态已经失效", 422)
+	}
+	if code != "A00000" {
+		return nil, sign.Fail("IQIYI_API_FAILED", firstText(resp.JSON["message"], "获取爱奇艺账号资料失败"), 502)
 	}
 	data := sign.Map(resp.JSON["data"])
 	return &sign.Profile{

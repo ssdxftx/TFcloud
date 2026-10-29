@@ -28,16 +28,17 @@ func NewMail(store *database.Store, cfg *config.Config, settings *SettingsServic
 }
 
 type smtpConfig struct {
-	Enabled    bool
-	Host       string
-	Port       int
-	Encryption string
-	Username   string
-	Password   string
-	FromEmail  string
-	FromName   string
-	ReplyTo    string
-	BatchLimit int
+	Enabled          bool
+	Host             string
+	Port             int
+	Encryption       string
+	Username         string
+	Password         string
+	FromEmail        string
+	FromName         string
+	ReplyTo          string
+	BatchLimit       int
+	DailySummaryHour int
 }
 
 func (m *MailService) config() (smtpConfig, error) {
@@ -46,22 +47,26 @@ func (m *MailService) config() (smtpConfig, error) {
 		return smtpConfig{}, err
 	}
 	cfg := smtpConfig{
-		Enabled:    truthy(group["enabled"]),
-		Host:       strings.TrimSpace(str(group["smtp_host"])),
-		Port:       asInt(group["smtp_port"]),
-		Encryption: str(group["smtp_encryption"]),
-		Username:   strings.TrimSpace(str(group["smtp_username"])),
-		Password:   str(group["smtp_password"]),
-		FromEmail:  strings.TrimSpace(str(group["from_email"])),
-		FromName:   firstNonEmpty(strings.TrimSpace(str(group["from_name"])), "天方云签"),
-		ReplyTo:    strings.TrimSpace(str(group["reply_to"])),
-		BatchLimit: asInt(group["batch_limit"]),
+		Enabled:          truthy(group["enabled"]),
+		Host:             strings.TrimSpace(str(group["smtp_host"])),
+		Port:             asInt(group["smtp_port"]),
+		Encryption:       str(group["smtp_encryption"]),
+		Username:         strings.TrimSpace(str(group["smtp_username"])),
+		Password:         str(group["smtp_password"]),
+		FromEmail:        strings.TrimSpace(str(group["from_email"])),
+		FromName:         firstNonEmpty(strings.TrimSpace(str(group["from_name"])), "天方云签"),
+		ReplyTo:          strings.TrimSpace(str(group["reply_to"])),
+		BatchLimit:       asInt(group["batch_limit"]),
+		DailySummaryHour: asInt(group["daily_summary_hour"]),
 	}
 	if cfg.BatchLimit <= 0 {
 		cfg.BatchLimit = 100
 	}
 	if cfg.Port == 0 {
 		cfg.Port = 465
+	}
+	if cfg.DailySummaryHour < 0 || cfg.DailySummaryHour > 23 {
+		cfg.DailySummaryHour = 23
 	}
 	return cfg, nil
 }
@@ -184,12 +189,16 @@ func (m *MailService) Test(recipient string) error {
 }
 
 func (m *MailService) Summary() (map[string]any, error) {
-	var pending, sending, sent, failed, tasks int
+	var pending, sending, sent, failed, tasks, todaySent int
 	_ = m.store.Read.Get(&pending, `SELECT COUNT(1) FROM TF_mail_records WHERE status='pending'`)
 	_ = m.store.Read.Get(&sending, `SELECT COUNT(1) FROM TF_mail_records WHERE status='sending'`)
 	_ = m.store.Read.Get(&sent, `SELECT COUNT(1) FROM TF_mail_records WHERE status='sent'`)
 	_ = m.store.Read.Get(&failed, `SELECT COUNT(1) FROM TF_mail_records WHERE status='failed'`)
 	_ = m.store.Read.Get(&tasks, `SELECT COUNT(1) FROM TF_mail_tasks`)
+	now := time.Now()
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+	_ = m.store.Read.Get(&todaySent, `SELECT COUNT(1) FROM TF_mail_records WHERE status='sent' AND sent_at >= ?`,
+		database.Ts(todayStart))
 	cfg, _ := m.config()
 	return map[string]any{
 		"enabled":     cfg.Enabled,
@@ -198,14 +207,17 @@ func (m *MailService) Summary() (map[string]any, error) {
 		"sent":        sent,
 		"failed":      failed,
 		"tasks":       tasks,
+		"today_sent":  todaySent,
 		"batch_limit": cfg.BatchLimit,
 	}, nil
 }
 
 func (m *MailService) Tasks(limit, offset int) (map[string]any, error) {
-	rows, err := m.store.Maps(`SELECT id, task_no, user_id, template_code, subject, status, priority,
-		total_count, success_count, failed_count, scheduled_at, started_at, finished_at, created_at, updated_at
-		FROM TF_mail_tasks ORDER BY id DESC LIMIT ? OFFSET ?`, limit, offset)
+	rows, err := m.store.Maps(`SELECT t.id, t.task_no, t.user_id, u.username AS username, t.template_code, t.subject, t.status,
+		t.priority, t.total_count, t.success_count, t.failed_count, t.scheduled_at, t.started_at, t.finished_at,
+		t.created_at, t.updated_at
+		FROM TF_mail_tasks t LEFT JOIN TF_users u ON u.id = t.user_id
+		ORDER BY t.id DESC LIMIT ? OFFSET ?`, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -248,7 +260,8 @@ func (m *MailService) AllRecords(keyword, status, templateCode string, limit, of
 	countArgs := append([]any{}, args...)
 	args = append(args, limit, offset)
 	items, err := m.store.Maps(`SELECT r.id, r.task_id, r.message_no, r.recipient, r.subject, r.status, r.attempts,
-		r.provider_message_id, r.last_error_code, r.last_error_message, r.sent_at, r.created_at
+		r.provider_message_id, r.last_error_code, r.last_error_message, r.sent_at, r.created_at,
+		t.task_no, t.template_code
 		FROM TF_mail_records r LEFT JOIN TF_mail_tasks t ON t.id = r.task_id
 		WHERE `+clause+` ORDER BY r.id DESC LIMIT ? OFFSET ?`, args...)
 	if err != nil {
@@ -286,6 +299,7 @@ func (m *MailService) Compose(input map[string]any, adminID int64) (map[string]a
 	if len(recipients) == 0 {
 		return nil, respond.NewError("MAIL_RECIPIENT_EMPTY", "没有有效收件人", 422)
 	}
+	storedHTML := mailBodyForStorage(html, text)
 
 	taskNo := secure.RandomHex(16)
 	now := database.Now()
@@ -309,7 +323,7 @@ func (m *MailService) Compose(input map[string]any, adminID int64) (map[string]a
 		if _, err := tx.Exec(`INSERT INTO TF_mail_records
 			(task_id, message_no, recipient, recipient_hash, subject, body_html, status, attempts, max_attempts, available_at, created_at, updated_at)
 			VALUES(?,?,?,?,?,?, 'pending', 0, 3, ?,?,?)`,
-			taskID, secure.RandomHex(16), lower, secure.SHA256Hex(lower), subject, html, now, now, now); err != nil {
+			taskID, secure.RandomHex(16), lower, secure.SHA256Hex(lower), subject, storedHTML, now, now, now); err != nil {
 			return nil, err
 		}
 	}
@@ -374,6 +388,158 @@ func (m *MailService) resolveRecipients(input map[string]any, limit int) ([]stri
 	return out, nil
 }
 
+type dailySummaryUser struct {
+	ID          int64   `db:"id"`
+	Username    string  `db:"username"`
+	DisplayName string  `db:"display_name"`
+	Email       *string `db:"email"`
+}
+
+type dailySummaryCounts struct {
+	Total     int
+	Success   int
+	Partial   int
+	Failed    int
+	Pending   int
+	Cancelled int
+}
+
+// SendDailySummaries 在配置的汇总小时为开启每日邮件的用户各排队一封汇总邮件。
+// 通过 TF_notification_events 的唯一事件键保证同一天只排队一次。
+func (m *MailService) SendDailySummaries() int {
+	cfg, err := m.config()
+	if err != nil || !cfg.Enabled {
+		return 0
+	}
+	now := time.Now()
+	if now.Hour() != cfg.DailySummaryHour {
+		return 0
+	}
+	date := now.Format("2006-01-02")
+	users := []dailySummaryUser{}
+	if err := m.store.Read.Select(&users, `SELECT id, username, display_name, email FROM TF_users
+		WHERE status='active' AND daily_sign_email=1 AND email IS NOT NULL AND email <> ''`); err != nil {
+		if m.logger != nil {
+			m.logger.Warn("load daily summary users failed", slog.String("error", err.Error()))
+		}
+		return 0
+	}
+	queued := 0
+	for _, user := range users {
+		email := strings.ToLower(strings.TrimSpace(deref(user.Email)))
+		if email == "" || !validEmail(email) {
+			continue
+		}
+		ok, err := m.queueDailySummary(user, email, date)
+		if err != nil {
+			if m.logger != nil {
+				m.logger.Warn("queue daily summary failed", slog.Int64("user", user.ID), slog.String("error", err.Error()))
+			}
+			continue
+		}
+		if ok {
+			queued++
+		}
+	}
+	return queued
+}
+
+func (m *MailService) dailyCounts(userID int64, date string) dailySummaryCounts {
+	rows := []struct {
+		Status string `db:"status"`
+		Total  int    `db:"total"`
+	}{}
+	_ = m.store.Read.Select(&rows, `SELECT status, COUNT(*) AS total FROM TF_sign_tasks
+		WHERE user_id=? AND schedule_date=? GROUP BY status`, userID, date)
+	out := dailySummaryCounts{}
+	for _, row := range rows {
+		out.Total += row.Total
+		switch row.Status {
+		case "succeeded":
+			out.Success += row.Total
+		case "partial":
+			out.Partial += row.Total
+		case "failed":
+			out.Failed += row.Total
+		case "cancelled":
+			out.Cancelled += row.Total
+		default:
+			out.Pending += row.Total
+		}
+	}
+	return out
+}
+
+func (m *MailService) queueDailySummary(user dailySummaryUser, email, date string) (bool, error) {
+	counts := m.dailyCounts(user.ID, date)
+	name := firstNonEmpty(user.DisplayName, user.Username)
+	message := fmt.Sprintf("今天共有 %d 个签到任务：成功 %d 个，部分完成 %d 个，失败 %d 个，等待执行 %d 个，已取消 %d 个。",
+		counts.Total, counts.Success, counts.Partial, counts.Failed, counts.Pending, counts.Cancelled)
+	if counts.Total == 0 {
+		message = "今天没有安排签到任务。"
+	}
+	subject := "每日签到汇总 · " + date
+	html, text := RenderNotification(NotificationData{
+		Title:     "每日签到汇总",
+		Preheader: date + " 的签到结果",
+		Greeting:  name,
+		Message:   message,
+		Facts: [][2]string{
+			{"成功", strconv.Itoa(counts.Success)},
+			{"部分完成", strconv.Itoa(counts.Partial)},
+			{"失败", strconv.Itoa(counts.Failed)},
+			{"等待执行", strconv.Itoa(counts.Pending)},
+			{"已取消", strconv.Itoa(counts.Cancelled)},
+		},
+		Accent: "#6366f1",
+		Action: "登录天方云签查看任务明细",
+	})
+	eventKey := "daily_sign_summary:" + strconv.FormatInt(user.ID, 10) + ":" + date
+	now := database.Now()
+	tx, err := m.store.Write.Beginx()
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.Exec(`INSERT INTO TF_notification_events
+		(user_id, event_type, event_key, status, payload_json, created_at, updated_at)
+		VALUES(?,?,?, 'queued', ?,?,?) ON CONFLICT(event_key) DO NOTHING`,
+		user.ID, "daily_sign_summary", eventKey,
+		mustJSON(map[string]any{"date": date, "total": counts.Total, "success": counts.Success, "failed": counts.Failed}),
+		now, now)
+	if err != nil {
+		return false, err
+	}
+	if affected, _ := res.RowsAffected(); affected == 0 {
+		return false, nil
+	}
+	taskRes, err := tx.Exec(`INSERT INTO TF_mail_tasks
+		(task_no, user_id, template_code, subject, context_json, status, priority, total_count, success_count,
+		 failed_count, scheduled_at, created_at, updated_at)
+		VALUES(?,?,?,?,?, 'pending', 0, 1, 0, 0, ?,?,?)`,
+		secure.RandomHex(16), user.ID, "daily_sign_summary", subject,
+		mustJSON(map[string]any{"html_body": html, "text_body": text}), now, now, now)
+	if err != nil {
+		return false, err
+	}
+	taskID, _ := taskRes.LastInsertId()
+	if _, err := tx.Exec(`INSERT INTO TF_mail_records
+		(task_id, message_no, recipient, recipient_hash, subject, body_html, status, attempts, max_attempts,
+		 available_at, created_at, updated_at)
+		VALUES(?,?,?,?,?,?, 'pending', 0, 3, ?,?,?)`,
+		taskID, secure.RandomHex(16), email, secure.SHA256Hex(email), subject, html, now, now, now); err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec(`UPDATE TF_notification_events SET mail_task_id=?, status='queued', updated_at=?
+		WHERE event_key=?`, taskID, now, eventKey); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // ProcessPending 由 mail worker 周期调用。
 func (m *MailService) ProcessPending(batch int) int {
 	if batch <= 0 {
@@ -419,6 +585,9 @@ func (m *MailService) ProcessPending(batch int) int {
 			if attempts >= 3 {
 				_, _ = m.store.Write.Exec(`UPDATE TF_mail_records SET status='failed', last_error_code='SMTP_SEND_FAILED',
 					last_error_message=?, updated_at=? WHERE id=?`, truncate(sendErr.Error(), 500), ts, row.ID)
+				if row.TaskID != nil {
+					_, _ = m.store.Write.Exec(`UPDATE TF_notification_events SET status='failed', updated_at=? WHERE mail_task_id=?`, ts, *row.TaskID)
+				}
 			} else {
 				next := database.Ts(time.Now().Add(time.Duration(attempts*attempts) * time.Minute))
 				_, _ = m.store.Write.Exec(`UPDATE TF_mail_records SET status='pending', last_error_code='SMTP_SEND_FAILED',
@@ -430,6 +599,9 @@ func (m *MailService) ProcessPending(batch int) int {
 		}
 		_, _ = m.store.Write.Exec(`UPDATE TF_mail_records SET status='sent', provider_message_id=?, sent_at=?, updated_at=? WHERE id=?`,
 			messageID, ts, ts, row.ID)
+		if row.TaskID != nil {
+			_, _ = m.store.Write.Exec(`UPDATE TF_notification_events SET status='sent', updated_at=? WHERE mail_task_id=?`, ts, *row.TaskID)
+		}
 		sent++
 	}
 	if len(rows) > 0 {
@@ -460,7 +632,8 @@ func (m *MailService) Retry(taskNo string) (map[string]any, error) {
 	if err := m.store.Read.Get(&taskID, `SELECT id FROM TF_mail_tasks WHERE task_no = ?`, taskNo); err != nil {
 		return nil, respond.NotFound("邮件任务不存在")
 	}
-	res, err := m.store.Write.Exec(`UPDATE TF_mail_records SET status='pending', attempts=0, available_at=?, updated_at=?
+	res, err := m.store.Write.Exec(`UPDATE TF_mail_records SET status='pending', attempts=0, available_at=?,
+		last_error_code=NULL, last_error_message=NULL, sent_at=NULL, updated_at=?
 		WHERE task_id=? AND status='failed'`, database.Now(), database.Now(), taskID)
 	if err != nil {
 		return nil, err
@@ -471,7 +644,9 @@ func (m *MailService) Retry(taskNo string) (map[string]any, error) {
 	} else {
 		m.refreshTaskStats()
 	}
-	return map[string]any{"task_no": taskNo, "requeued": n}, nil
+	status := ""
+	_ = m.store.Read.Get(&status, `SELECT status FROM TF_mail_tasks WHERE task_no = ?`, taskNo)
+	return map[string]any{"task_no": taskNo, "requeued": n, "status": status}, nil
 }
 
 // RecoverStaleSending 把进程崩溃后遗留的 sending 记录重新入队或标记失败。
@@ -506,6 +681,16 @@ func (m *MailService) RecoverStaleSending(olderThan time.Duration, limit int) in
 		}
 	}
 	return int(n)
+}
+
+func mailBodyForStorage(html, text string) string {
+	if strings.TrimSpace(html) != "" {
+		return html
+	}
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+	return `<pre style="white-space:pre-wrap;font-family:inherit;">` + escapeHTML(text) + `</pre>`
 }
 
 // ---------- 模板渲染 ----------

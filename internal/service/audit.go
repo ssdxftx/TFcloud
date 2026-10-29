@@ -19,15 +19,22 @@ type AuditService struct {
 
 func NewAudit(store *database.Store) *AuditService { return &AuditService{store: store} }
 
-func (s *AuditService) Record(userID int64, action, resourceType, resourceID string, context map[string]any) {
+func (s *AuditService) Record(userID int64, action, resourceType, resourceID string, context map[string]any, requestID ...string) {
 	if s == nil || s.store == nil {
 		return
 	}
 	_, _ = s.store.Write.Exec(`INSERT INTO TF_audit_logs
-		(user_id, action, resource_type, resource_id, context_json, created_at)
-		VALUES(?,?,?,?,?,?)`,
-		nullableID(userID), truncate(action, 128), nullableString(resourceType), nullableString(resourceID),
-		jsonOrNil(context), database.Now())
+		(user_id, request_id, action, resource_type, resource_id, context_json, created_at)
+		VALUES(?,?,?,?,?,?,?)`,
+		nullableID(userID), nullableString(firstString(requestID)), truncate(action, 128),
+		nullableString(resourceType), nullableString(resourceID), jsonOrNil(context), database.Now())
+}
+
+func firstString(values []string) string {
+	if len(values) > 0 {
+		return strings.TrimSpace(values[0])
+	}
+	return ""
 }
 
 func (s *AuditService) RecordWithIP(userID int64, action, resourceType, resourceID, ip string, context map[string]any) {

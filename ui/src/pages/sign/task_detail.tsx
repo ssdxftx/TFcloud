@@ -11,6 +11,7 @@ import { LuArrowLeft, LuRefreshCw, LuSquare } from 'react-icons/lu';
 import { useNavigate, useParams } from 'react-router-dom';
 
 import { apiRequest } from '@/api/client';
+import { useSite } from '@/contexts/site';
 import StatusChip from '@/components/sign/status_chip';
 import type { Paginated, SignRecord, SignRun, SignTask } from '@/types/sign';
 import { actionNames, errorMessage, formatDateTime, pluginNames } from '@/utils/sign';
@@ -18,6 +19,7 @@ import { actionNames, errorMessage, formatDateTime, pluginNames } from '@/utils/
 const pageSize = 15;
 
 export default function TaskDetailPage ({ admin = false }: { admin?: boolean }) {
+  useSite();
   const { taskNo = '' } = useParams();
   const [task, setTask] = useState<SignTask | null>(null);
   const [runs, setRuns] = useState<Paginated<SignRun> | null>(null);

@@ -314,12 +314,13 @@ func (s *AccountService) Update(userID, accountID int64, input map[string]any) (
 		}
 		normalized := normalizeLegacySettings(effectiveSettings, acc.NextRunAt)
 		nextRunCandidate := nullableString(nextSchedule(normalized, seed))
-		if _, err := tx.Exec(`UPDATE TF_plugin_accounts SET status='active', last_verified_at=?, last_error_code=NULL,
+		if _, err := tx.Exec(`UPDATE TF_plugin_accounts SET
+			status=CASE WHEN ? THEN status ELSE 'active' END, last_verified_at=?, last_error_code=NULL,
 			last_error_message=NULL, display_name=CASE WHEN display_name='' THEN ? ELSE display_name END,
 			external_user_id=?, profile_json=?,
 			next_run_at=CASE WHEN next_run_at IS NULL OR next_run_at <= ? THEN ? ELSE next_run_at END,
 			updated_at=? WHERE id=?`,
-			now, truncate(profile.DisplayName, 191), nullableString(profile.ExternalID), profileJSON,
+			status != nil, now, truncate(profile.DisplayName, 191), nullableString(profile.ExternalID), profileJSON,
 			now, nextRunCandidate, now, accountID); err != nil {
 			return nil, err
 		}

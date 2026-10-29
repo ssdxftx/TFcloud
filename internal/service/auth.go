@@ -304,10 +304,14 @@ func (s *AuthService) Logout(token string) {
 		database.Now(), secure.SHA256Hex(token))
 }
 
-func (s *AuthService) RevokeUserSessions(userID int64) error {
-	_, err := s.store.Write.Exec(`UPDATE TF_sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`,
+func (s *AuthService) RevokeUserSessions(userID int64) (int64, error) {
+	res, err := s.store.Write.Exec(`UPDATE TF_sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`,
 		database.Now(), userID)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
 }
 
 func (s *AuthService) issueSession(userID int64, ip, ua, now string) (map[string]any, error) {

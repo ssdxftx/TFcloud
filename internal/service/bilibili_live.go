@@ -38,8 +38,59 @@ func NewLive(store *database.Store, accounts *AccountService, tasks *TaskService
 const (
 	liveDefaultHeartbeats = 70
 	liveDefaultMaxRooms   = 5
-	liveMaxDuration       = 40 * time.Minute
+	liveDefaultFailures   = 5
+	liveMinDuration       = 40 * time.Minute
+	liveMaxDuration       = 8 * time.Hour
+	liveHeartbeatInterval = 60 * time.Second
+	liveRecoverIdle       = 10 * time.Minute
+	liveRecoverFallback   = 15 * time.Minute
 )
+
+func liveTargetHeartbeats(settings map[string]any) int {
+	target := asInt(settings["live_heartbeat_count"])
+	if target <= 0 {
+		target = asInt(settings["live_target_heartbeats"])
+	}
+	if target <= 0 {
+		target = liveDefaultHeartbeats
+	}
+	return clampInt(target, 1, 180)
+}
+
+func liveMaxRooms(settings map[string]any) int {
+	rooms := asInt(settings["live_max_rooms"])
+	if rooms <= 0 {
+		rooms = liveDefaultMaxRooms
+	}
+	return clampInt(rooms, 1, 50)
+}
+
+func liveMaxFailures(settings map[string]any) int {
+	failures := asInt(settings["live_max_failures"])
+	if failures <= 0 {
+		failures = liveDefaultFailures
+	}
+	return clampInt(failures, 1, 20)
+}
+
+// liveSessionDuration 按「每房间目标心跳」估算会话时长，并设置上下限。
+// 实际心跳间隔由服务端返回，60 秒是保守估算。
+func liveSessionDuration(rooms, target int) time.Duration {
+	if rooms < 1 {
+		rooms = 1
+	}
+	if target < 1 {
+		target = 1
+	}
+	duration := time.Duration(rooms*target)*liveHeartbeatInterval + 10*time.Minute
+	if duration < liveMinDuration {
+		duration = liveMinDuration
+	}
+	if duration > liveMaxDuration {
+		duration = liveMaxDuration
+	}
+	return duration
+}
 
 func (s *LiveService) bilibiliCookie(creds map[string]any) string {
 	parts := []string{
@@ -80,10 +131,17 @@ func (s *LiveService) discover(ctx context.Context, creds map[string]any) ([]liv
 	if err != nil {
 		return nil, err
 	}
-	if resp.JSON == nil {
-		return nil, sign.Fail("BILIBILI_MEDAL_FAILED", "获取粉丝牌列表失败：响应格式错误", 502)
+	if liveUpstreamUnavailable(resp) {
+		return nil, sign.Fail("UPSTREAM_REQUEST_FAILED", "获取粉丝牌列表失败：上游服务暂时不可用", 502)
 	}
-	if sign.ValueInt(resp.JSON["code"]) != 0 {
+	if resp.JSON == nil {
+		return nil, sign.Fail("BILIBILI_RESPONSE_INVALID", "获取粉丝牌列表失败：响应格式错误", 502)
+	}
+	code := sign.ValueInt(resp.JSON["code"])
+	if code == -101 {
+		return nil, sign.Fail("PLUGIN_CREDENTIAL_EXPIRED", "哔哩哔哩登录状态已经失效", 422)
+	}
+	if code != 0 {
 		return nil, sign.Fail("BILIBILI_MEDAL_FAILED", firstText(resp.JSON["message"], "获取粉丝牌列表失败"), 502)
 	}
 	data := sign.Map(resp.JSON["data"])
@@ -152,10 +210,17 @@ func (s *LiveService) enterRoom(ctx context.Context, creds map[string]any, room 
 	if err != nil {
 		return nil, err
 	}
-	if resp.JSON == nil {
-		return nil, sign.Fail("BILIBILI_LIVE_ENTER_FAILED", "进入直播间失败：响应格式错误", 502)
+	if liveUpstreamUnavailable(resp) {
+		return nil, sign.Fail("UPSTREAM_REQUEST_FAILED", "进入直播间失败：上游服务暂时不可用", 502)
 	}
-	if sign.ValueInt(resp.JSON["code"]) != 0 {
+	if resp.JSON == nil {
+		return nil, sign.Fail("BILIBILI_RESPONSE_INVALID", "进入直播间失败：响应格式错误", 502)
+	}
+	code := sign.ValueInt(resp.JSON["code"])
+	if code == -101 {
+		return nil, sign.Fail("PLUGIN_CREDENTIAL_EXPIRED", "哔哩哔哩登录状态已经失效", 422)
+	}
+	if code != 0 {
 		return nil, sign.Fail("BILIBILI_LIVE_ENTER_FAILED", firstText(resp.JSON["message"], "进入直播间失败"), 502)
 	}
 	data := sign.Map(resp.JSON["data"])
@@ -215,13 +280,27 @@ func (s *LiveService) heartbeat(ctx context.Context, creds map[string]any, room 
 	if err != nil {
 		return err
 	}
-	if resp.JSON == nil {
-		return sign.Fail("BILIBILI_LIVE_HEARTBEAT_FAILED", "心跳失败：响应格式错误", 502)
+	if liveUpstreamUnavailable(resp) {
+		return sign.Fail("UPSTREAM_REQUEST_FAILED", "心跳失败：上游服务暂时不可用", 502)
 	}
-	if code := sign.ValueInt(resp.JSON["code"]); code != 0 {
+	if resp.JSON == nil {
+		return sign.Fail("BILIBILI_RESPONSE_INVALID", "心跳失败：响应格式错误", 502)
+	}
+	code := sign.ValueInt(resp.JSON["code"])
+	if code == -101 {
+		return sign.Fail("PLUGIN_CREDENTIAL_EXPIRED", "哔哩哔哩登录状态已经失效", 422)
+	}
+	if code != 0 {
 		return sign.Fail("BILIBILI_LIVE_HEARTBEAT_FAILED", firstText(resp.JSON["message"], "心跳失败"), 502)
 	}
 	return nil
+}
+
+func liveUpstreamUnavailable(resp *sign.Response) bool {
+	if resp == nil {
+		return true
+	}
+	return resp.Status == 0 || resp.Status == 429 || resp.Status >= 500
 }
 
 func (s *LiveService) roomInfo(ctx context.Context, creds map[string]any, roomID int64) (parentArea, areaID int64, name string) {
@@ -238,7 +317,7 @@ func (s *LiveService) roomInfo(ctx context.Context, creds map[string]any, roomID
 }
 
 // RunSession 执行一次完整的挂机任务（由 live worker 调用）。
-func (s *LiveService) RunSession(task *model.SignTask, workerID string) {
+func (s *LiveService) RunSession(ctx context.Context, task *model.SignTask, workerID string) {
 	started := time.Now()
 	runID, err := s.startRun(task, workerID, started)
 	if err != nil {
@@ -256,41 +335,56 @@ func (s *LiveService) RunSession(task *model.SignTask, workerID string) {
 		s.finish(task, nil, runID, "failed", 0, 0, 1, "PLUGIN_ACCOUNT_DISABLED", err.Error())
 		return
 	}
+	if acc.Status != "active" && acc.Status != "pending_verification" {
+		s.finish(task, nil, runID, "failed", 0, 0, 1, "PLUGIN_ACCOUNT_DISABLED", "插件账号当前不可执行")
+		return
+	}
 	creds, err := s.accounts.DecryptedCredential(acc)
 	if err != nil {
 		s.finish(task, nil, runID, "failed", 0, 0, 1, "PLUGIN_CREDENTIAL_MISSING", err.Error())
 		return
 	}
 	settings := unmarshalMap(acc.SettingsJSON)
-	target := liveDefaultHeartbeats
-	if v := asInt(settings["live_target_heartbeats"]); v > 0 {
-		target = v
-	}
-	maxRooms := liveDefaultMaxRooms
-	if v := asInt(settings["live_max_rooms"]); v > 0 {
-		maxRooms = v
-	}
+	target := liveTargetHeartbeats(settings)
+	maxRooms := liveMaxRooms(settings)
+	maxFailures := liveMaxFailures(settings)
 
-	ctx, cancel := context.WithTimeout(context.Background(), liveMaxDuration)
-	defer cancel()
-
-	medals, err := s.discover(ctx, creds)
+	discoverCtx, discoverCancel := context.WithTimeout(ctx, liveMinDuration)
+	medals, err := s.discover(discoverCtx, creds)
+	discoverCancel()
 	if err != nil {
 		s.finish(task, nil, runID, "failed", 0, 0, 1, errorCode(err), err.Error())
 		return
 	}
+	if truthy(settings["live_skip_level_20_medal"]) {
+		filtered := medals[:0]
+		for _, medal := range medals {
+			if medal.MedalLevel < 20 {
+				filtered = append(filtered, medal)
+			}
+		}
+		medals = filtered
+	}
 	if len(medals) > maxRooms {
 		medals = medals[:maxRooms]
 	}
+	if len(medals) == 0 {
+		s.finish(task, nil, runID, "succeeded", 0, 0, 0, "", "没有符合条件的粉丝牌，已跳过本次挂机")
+		return
+	}
+
+	duration := liveSessionDuration(len(medals), target)
+	sessionCtx, cancel := context.WithTimeout(ctx, duration)
+	defer cancel()
 
 	now := database.Now()
 	sessionNo := secure.RandomHex(16)
 	res, err := s.store.Write.Exec(`INSERT INTO TF_bilibili_live_sessions
 		(session_no, task_id, run_id, user_id, account_id, status, target_heartbeat_count, max_failures,
 		 max_rooms, settings_json, expires_at, started_at, created_at, updated_at)
-		VALUES(?,?,?,?,?, 'running', ?,5,?,?,?,?,?,?)`,
-		sessionNo, task.ID, runID, task.UserID, task.AccountID, target, maxRooms,
-		mustJSON(settings), database.Ts(time.Now().Add(liveMaxDuration)), now, now, now)
+		VALUES(?,?,?,?,?, 'running', ?,?,?,?,?,?,?,?)`,
+		sessionNo, task.ID, runID, task.UserID, task.AccountID, target, maxFailures,
+		maxRooms, mustJSON(settings), database.Ts(time.Now().Add(duration)), now, now, now)
 	if err != nil {
 		s.finish(task, nil, runID, "failed", 0, 0, 1, "LIVE_SESSION_FAILED", "创建挂机会话失败")
 		return
@@ -299,12 +393,16 @@ func (s *LiveService) RunSession(task *model.SignTask, workerID string) {
 
 	completedRooms, partialRooms, failedRooms := 0, 0, 0
 	var failures []string
+	liveCredentialCode := ""
 
 	for idx, medal := range medals {
-		if ctx.Err() != nil {
+		if sessionCtx.Err() != nil {
+			remaining := len(medals) - idx
+			failedRooms += remaining
+			failures = append(failures, fmt.Sprintf("%d 个直播间未处理：会话超时", remaining))
 			break
 		}
-		parentArea, areaID, title := s.roomInfo(ctx, creds, medal.RoomID)
+		parentArea, areaID, title := s.roomInfo(sessionCtx, creds, medal.RoomID)
 		medal.ParentArea, medal.AreaID = parentArea, areaID
 		if title != "" {
 			medal.RoomName = title
@@ -325,30 +423,48 @@ func (s *LiveService) RunSession(task *model.SignTask, workerID string) {
 			roomRowID, _ = rr.LastInsertId()
 		}
 
-		params, err := s.enterRoom(ctx, creds, medal, device, idx)
+		params, err := s.enterRoom(sessionCtx, creds, medal, device, idx)
 		if err != nil {
 			failedRooms++
 			failures = append(failures, medal.MedalName+": "+err.Error())
+			if code := errorCode(err); liveCredentialCode == "" && isCredentialFailureCode(code) {
+				liveCredentialCode = code
+			}
 			s.updateRoom(roomRowID, map[string]any{"status": "failed", "last_error_code": errorCode(err),
-				"last_error_message": truncate(err.Error(), 500), "finished_at": database.Now()})
+				"last_error_message": truncate(err.Error(), 500), "next_heartbeat_at": nil, "finished_at": database.Now()})
+			if failedRooms >= maxFailures {
+				remaining := len(medals) - idx - 1
+				if remaining > 0 {
+					failedRooms += remaining
+					failures = append(failures, fmt.Sprintf("失败达到阈值 %d，剩余 %d 个直播间未处理", maxFailures, remaining))
+				}
+				break
+			}
 			continue
 		}
 
 		count := 0
+		var heartbeatErr error
 		for count < target {
-			if ctx.Err() != nil {
+			if sessionCtx.Err() != nil {
+				heartbeatErr = sessionCtx.Err()
 				break
 			}
-			if err := s.heartbeat(ctx, creds, medal, params, device, idx); err != nil {
+			if err := s.heartbeat(sessionCtx, creds, medal, params, device, idx); err != nil {
+				heartbeatErr = err
+				if code := errorCode(err); liveCredentialCode == "" && isCredentialFailureCode(code) {
+					liveCredentialCode = code
+				}
 				break
 			}
 			count++
-			s.writeProgress(sessionID, roomRowID, count, target, false)
+			s.writeProgress(sessionID, roomRowID, count)
 			if count >= target {
 				break
 			}
 			select {
-			case <-ctx.Done():
+			case <-sessionCtx.Done():
+				heartbeatErr = sessionCtx.Err()
 			case <-time.After(time.Duration(params.Interval) * time.Second):
 			}
 		}
@@ -359,10 +475,12 @@ func (s *LiveService) RunSession(task *model.SignTask, workerID string) {
 			if count == 0 {
 				status = "failed"
 			}
+			if heartbeatErr != nil {
+				failures = append(failures, medal.MedalName+": "+heartbeatErr.Error())
+			}
 		}
 		s.updateRoom(roomRowID, map[string]any{"status": status, "heartbeat_count": count,
-			"finished_at": database.Now()})
-		s.writeProgress(sessionID, roomRowID, count, target, count >= target)
+			"next_heartbeat_at": nil, "finished_at": database.Now()})
 		switch {
 		case count >= target:
 			completedRooms++
@@ -371,24 +489,40 @@ func (s *LiveService) RunSession(task *model.SignTask, workerID string) {
 		default:
 			failedRooms++
 		}
+		if failedRooms >= maxFailures {
+			remaining := len(medals) - idx - 1
+			if remaining > 0 {
+				failedRooms += remaining
+				failures = append(failures, fmt.Sprintf("失败达到阈值 %d，剩余 %d 个直播间未处理", maxFailures, remaining))
+			}
+			break
+		}
 	}
 
 	status, successCount, failedCount := liveOutcome(completedRooms, partialRooms, failedRooms)
-	message := fmt.Sprintf("粉丝牌挂机完成：%d 个直播间完成，%d 个部分完成，%d 个失败",
-		completedRooms, partialRooms, failedRooms)
+	summary := fmt.Sprintf("%d 个直播间完成，%d 个部分完成，%d 个失败", completedRooms, partialRooms, failedRooms)
+	message := "粉丝牌挂机完成：" + summary
 	code := ""
 	if status == "failed" {
 		code = "BILIBILI_LIVE_FAILED"
+		message = "粉丝牌挂机失败：" + summary
 		if len(failures) > 0 {
 			message = failures[0]
 		}
 	} else if status == "partial" {
 		code = "BILIBILI_LIVE_PARTIAL"
+		message = "粉丝牌挂机部分完成：" + summary
+	}
+	if liveCredentialCode != "" && status != "succeeded" {
+		code = liveCredentialCode
+		if len(failures) > 0 {
+			message = failures[0]
+		}
 	}
 	finishSession := map[string]any{
 		"status": "finished", "summary_json": mustJSON(map[string]any{
 			"rooms_total": len(medals), "rooms_succeeded": completedRooms, "rooms_partial": partialRooms,
-			"rooms_failed": failedRooms, "target_heartbeats": target,
+			"rooms_failed": failedRooms, "target_heartbeats": target, "max_failures": maxFailures,
 			"duration_ms": time.Since(started).Milliseconds(),
 		}),
 		"finished_at": database.Now(),
@@ -400,12 +534,14 @@ func (s *LiveService) RunSession(task *model.SignTask, workerID string) {
 func liveOutcome(completed, partial, failed int) (status string, success, failedCount int) {
 	failedCount = partial + failed
 	switch {
-	case completed == 0:
-		return "failed", 0, failedCount
-	case failedCount > 0:
+	case completed > 0 && failedCount > 0:
 		return "partial", completed, failedCount
-	default:
+	case completed > 0:
 		return "succeeded", completed, 0
+	case partial > 0:
+		return "partial", 0, failedCount
+	default:
+		return "failed", 0, failedCount
 	}
 }
 
@@ -421,7 +557,7 @@ func (s *LiveService) startRun(task *model.SignTask, workerID string, started ti
 	return res.LastInsertId()
 }
 
-func (s *LiveService) writeProgress(sessionID, roomRowID int64, count, target int, completed bool) {
+func (s *LiveService) writeProgress(sessionID, roomRowID int64, count int) {
 	if roomRowID == 0 {
 		return
 	}
@@ -430,10 +566,9 @@ func (s *LiveService) writeProgress(sessionID, roomRowID int64, count, target in
 		return
 	}
 	defer func() { _ = tx.Rollback() }()
-	_, _ = tx.Exec(`UPDATE TF_bilibili_live_room_sessions SET heartbeat_count=?, status=? ,
+	_, _ = tx.Exec(`UPDATE TF_bilibili_live_room_sessions SET heartbeat_count=?, status='running',
 		next_heartbeat_at=?, updated_at=? WHERE id=?`,
-		count, map[bool]string{true: "completed", false: "running"}[completed],
-		database.Ts(time.Now().Add(60*time.Second)), database.Now(), roomRowID)
+		count, database.Ts(time.Now().Add(liveHeartbeatInterval)), database.Now(), roomRowID)
 	_, _ = tx.Exec(`UPDATE TF_bilibili_live_sessions SET updated_at=? WHERE id=?`, database.Now(), sessionID)
 	_ = tx.Commit()
 }
@@ -492,7 +627,8 @@ func (s *LiveService) finish(task *model.SignTask, sessionID *int64, runID int64
 		last_error_code=?, last_error_message=?, locked_at=NULL, locked_by=NULL, finished_at=?, updated_at=? WHERE id=?`,
 		runStatus, total, success, already, failed, errCode, errMsg, finished, finished, task.ID)
 	_, _ = tx.Exec(`UPDATE TF_plugin_accounts SET last_run_at=?, last_error_code=?, last_error_message=?,
-		updated_at=? WHERE id=?`, finished, errCode, errMsg, finished, task.AccountID)
+		status=CASE WHEN ? THEN 'credential_expired' ELSE status END, updated_at=? WHERE id=?`,
+		finished, errCode, errMsg, status != "succeeded" && isCredentialFailureCode(code), finished, task.AccountID)
 	if runID > 0 {
 		_, _ = tx.Exec(`UPDATE TF_sign_runs SET status=?, total_count=?, success_count=?, already_count=?,
 			failed_count=?, error_code=?, error_message=?, summary_json=?, finished_at=? WHERE id=?`,

@@ -50,7 +50,7 @@ func (s *Server) adminSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 		respond.Fail(w, r, err)
 		return
 	}
-	s.Audit.Record(userID(r), "admin.settings.update", "settings", group, map[string]any{"keys": len(payload)})
+	s.Audit.Record(userID(r), "admin.settings.update", "settings", group, map[string]any{"keys": len(payload)}, respond.RequestID(r.Context()))
 	respond.Message(w, r, out, "配置已保存")
 }
 
@@ -83,7 +83,7 @@ func (s *Server) adminUserCreate(w http.ResponseWriter, r *http.Request) {
 		respond.Fail(w, r, err)
 		return
 	}
-	out, err := s.Admin.CreateUser(payload, userID(r))
+	out, err := s.Admin.CreateUser(payload, userID(r), respond.RequestID(r.Context()))
 	if err != nil {
 		respond.Fail(w, r, err)
 		return
@@ -116,7 +116,7 @@ func (s *Server) adminUserUpdate(w http.ResponseWriter, r *http.Request) {
 		respond.Fail(w, r, err)
 		return
 	}
-	out, err := s.Admin.UpdateUser(id, payload, userID(r))
+	out, err := s.Admin.UpdateUser(id, payload, userID(r), respond.RequestID(r.Context()))
 	if err != nil {
 		respond.Fail(w, r, err)
 		return
@@ -130,7 +130,7 @@ func (s *Server) adminUserDelete(w http.ResponseWriter, r *http.Request) {
 		respond.Fail(w, r, err)
 		return
 	}
-	if err := s.Admin.DeleteUser(id, userID(r)); err != nil {
+	if err := s.Admin.DeleteUser(id, userID(r), respond.RequestID(r.Context())); err != nil {
 		respond.Fail(w, r, err)
 		return
 	}
@@ -148,7 +148,7 @@ func (s *Server) adminUserResetPassword(w http.ResponseWriter, r *http.Request) 
 		respond.Fail(w, r, err)
 		return
 	}
-	if err := s.Admin.ResetUserPassword(id, strOf(payload["password"]), userID(r)); err != nil {
+	if err := s.Admin.ResetUserPassword(id, strOf(payload["password"]), userID(r), respond.RequestID(r.Context())); err != nil {
 		respond.Fail(w, r, err)
 		return
 	}
@@ -161,12 +161,13 @@ func (s *Server) adminUserRevokeSessions(w http.ResponseWriter, r *http.Request)
 		respond.Fail(w, r, err)
 		return
 	}
-	if err := s.Auth.RevokeUserSessions(id); err != nil {
+	n, err := s.Auth.RevokeUserSessions(id)
+	if err != nil {
 		respond.Fail(w, r, err)
 		return
 	}
-	s.Audit.Record(userID(r), "admin.user.revoke_sessions", "user", strOf(id), nil)
-	respond.Message(w, r, map[string]any{"revoked": true}, "该用户的登录会话已全部失效")
+	s.Audit.Record(userID(r), "admin.user.revoke_sessions", "user", strOf(id), nil, respond.RequestID(r.Context()))
+	respond.Message(w, r, map[string]any{"revoked_count": n}, "该用户的登录会话已全部失效")
 }
 
 // ---------- 后台任务 ----------
@@ -208,7 +209,7 @@ func (s *Server) adminTaskRecords(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) adminTaskRetry(w http.ResponseWriter, r *http.Request) {
-	out, err := s.Admin.RetryTask(path(r, "taskNo"), userID(r))
+	out, err := s.Admin.RetryTask(path(r, "taskNo"), userID(r), respond.RequestID(r.Context()))
 	if err != nil {
 		respond.Fail(w, r, err)
 		return
@@ -217,7 +218,7 @@ func (s *Server) adminTaskRetry(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) adminTaskCancel(w http.ResponseWriter, r *http.Request) {
-	out, err := s.Admin.CancelTask(path(r, "taskNo"), userID(r))
+	out, err := s.Admin.CancelTask(path(r, "taskNo"), userID(r), respond.RequestID(r.Context()))
 	if err != nil {
 		respond.Fail(w, r, err)
 		return
@@ -247,7 +248,7 @@ func (s *Server) adminAccountUpdate(w http.ResponseWriter, r *http.Request) {
 		respond.Fail(w, r, err)
 		return
 	}
-	out, err := s.Admin.UpdateAccount(id, payload, userID(r))
+	out, err := s.Admin.UpdateAccount(id, payload, userID(r), respond.RequestID(r.Context()))
 	if err != nil {
 		respond.Fail(w, r, err)
 		return
@@ -261,7 +262,7 @@ func (s *Server) adminAccountDelete(w http.ResponseWriter, r *http.Request) {
 		respond.Fail(w, r, err)
 		return
 	}
-	if err := s.Admin.DeleteAccount(id, userID(r)); err != nil {
+	if err := s.Admin.DeleteAccount(id, userID(r), respond.RequestID(r.Context())); err != nil {
 		respond.Fail(w, r, err)
 		return
 	}
@@ -274,7 +275,7 @@ func (s *Server) adminAccountAction(w http.ResponseWriter, r *http.Request) {
 		respond.Fail(w, r, err)
 		return
 	}
-	out, err := s.Admin.AccountAction(id, path(r, "action"), userID(r))
+	out, err := s.Admin.AccountAction(id, path(r, "action"), userID(r), respond.RequestID(r.Context()))
 	if err != nil {
 		respond.Fail(w, r, err)
 		return
@@ -380,7 +381,7 @@ func (s *Server) adminMailRetry(w http.ResponseWriter, r *http.Request) {
 		respond.Fail(w, r, err)
 		return
 	}
-	s.Audit.Record(userID(r), "admin.mail.retry", "mail_task", path(r, "taskNo"), nil)
+	s.Audit.Record(userID(r), "admin.mail.retry", "mail_task", path(r, "taskNo"), nil, respond.RequestID(r.Context()))
 	respond.Message(w, r, out, "失败邮件已重新入队")
 }
 
@@ -396,7 +397,7 @@ func (s *Server) adminMailCompose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Audit.Record(userID(r), "admin.mail.compose", "mail_task", strOf(out["task_no"]),
-		map[string]any{"total_count": out["total_count"], "subject": out["subject"]})
+		map[string]any{"total_count": out["total_count"], "subject": out["subject"]}, respond.RequestID(r.Context()))
 	respond.Created(w, r, out)
 }
 
@@ -411,6 +412,6 @@ func (s *Server) adminMailTest(w http.ResponseWriter, r *http.Request) {
 		respond.Fail(w, r, err)
 		return
 	}
-	s.Audit.Record(userID(r), "admin.mail.test", "mail", "", map[string]any{"recipient": recipient})
+	s.Audit.Record(userID(r), "admin.mail.test", "mail", "", map[string]any{"recipient": recipient}, respond.RequestID(r.Context()))
 	respond.Message(w, r, map[string]any{"sent": true}, "测试邮件已发送")
 }

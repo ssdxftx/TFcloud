@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 
-import { AUTH_EXPIRED_EVENT, AUTH_TOKEN_KEY, apiRequest } from '@/api/client';
+import { AUTH_EXPIRED_EVENT, AUTH_TOKEN_KEY, ApiError, apiRequest } from '@/api/client';
 import type { LoginResult, QqExchangeResult, User } from '@/types/sign';
 
 interface AuthContextValue {
@@ -32,9 +32,11 @@ export function AuthProvider ({ children }: { children: React.ReactNode }) {
       const current = await apiRequest<User>({ url: '/me' });
       setUser(current);
       return current;
-    } catch {
-      localStorage.removeItem(AUTH_TOKEN_KEY);
-      setUser(null);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        localStorage.removeItem(AUTH_TOKEN_KEY);
+        setUser(null);
+      }
       return null;
     } finally {
       setLoading(false);

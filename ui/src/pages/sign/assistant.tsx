@@ -22,6 +22,7 @@ import { useNavigate } from 'react-router-dom';
 import remarkGfm from 'remark-gfm';
 
 import { apiRequest, apiStream } from '@/api/client';
+import { useSite } from '@/contexts/site';
 import { confirmCard } from '@/components/confirm_card';
 import PlatformLogo from '@/components/platform_logo';
 import { useSignAuth } from '@/contexts/auth';
@@ -83,6 +84,7 @@ function TypingDots () {
 }
 
 export default function AssistantPage () {
+  useSite();
   const [status, setStatus] = useState<AstrBotStatus | null>(null);
   const [messages, setMessages] = useState<AstrBotMessage[]>([]);
   const [draft, setDraft] = useState('');

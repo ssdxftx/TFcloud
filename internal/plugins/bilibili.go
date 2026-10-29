@@ -92,7 +92,7 @@ func (p *Bilibili) Execute(ctx context.Context, c *sign.Context) (*sign.Result, 
 				continue
 			}
 		}
-		rec := invokeBilibili(ctx, client, action, c)
+		rec := normalizeBilibiliRecord(invokeBilibili(ctx, client, action, c))
 		records = append(records, rec)
 		c.Emit(rec)
 	}
@@ -227,8 +227,21 @@ func (c *bilibiliClient) profile(ctx context.Context) (*sign.Profile, error) {
 	if err != nil {
 		return nil, err
 	}
+	if resp.Status == 0 || resp.Status == 429 || resp.Status >= 500 {
+		return nil, sign.Fail("UPSTREAM_REQUEST_FAILED", "哔哩哔哩服务暂时不可用", 502)
+	}
+	if resp.JSON == nil {
+		return nil, sign.Fail("BILIBILI_RESPONSE_INVALID", "哔哩哔哩返回了无法识别的响应", 502)
+	}
 	data := sign.Map(resp.JSON["data"])
-	if sign.ValueInt(resp.JSON["code"]) == -101 || data == nil || !sign.ValueBool(data["isLogin"]) {
+	code := sign.ValueInt(resp.JSON["code"])
+	if code == -101 {
+		return nil, sign.Fail("PLUGIN_CREDENTIAL_EXPIRED", "哔哩哔哩登录状态已经失效", 422)
+	}
+	if data == nil {
+		return nil, sign.Fail("BILIBILI_RESPONSE_INVALID", "哔哩哔哩返回了无法识别的响应", 502)
+	}
+	if !sign.ValueBool(data["isLogin"]) {
 		return nil, sign.Fail("PLUGIN_CREDENTIAL_EXPIRED", "哔哩哔哩登录状态已经失效", 422)
 	}
 	levelInfo := sign.Map(data["level_info"])
@@ -612,6 +625,16 @@ func videoRecord(resp *sign.Response, action string, video map[string]any, succe
 		Message: firstText(resp.JSON["message"], pick(status == "succeeded", successMessage, "任务失败")),
 		Metrics: map[string]any{"bvid": sign.ValueString(video["bvid"])},
 	}
+}
+
+func normalizeBilibiliRecord(rec sign.Record) sign.Record {
+	if rec.Code == "-101" {
+		rec.Code = "PLUGIN_CREDENTIAL_EXPIRED"
+		if rec.Message == "" || rec.Message == "-101" {
+			rec.Message = "哔哩哔哩登录状态已经失效"
+		}
+	}
+	return rec
 }
 
 func hasJSON(resp *sign.Response) bool {

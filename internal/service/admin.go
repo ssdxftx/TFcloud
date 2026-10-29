@@ -104,7 +104,7 @@ func (s *AdminService) Users(filters map[string]any) (map[string]any, error) {
 	return pageResult(items, total, page, perPage, offset), nil
 }
 
-func (s *AdminService) CreateUser(input map[string]any, adminID int64) (map[string]any, error) {
+func (s *AdminService) CreateUser(input map[string]any, adminID int64, requestID ...string) (map[string]any, error) {
 	username := strings.TrimSpace(str(input["username"]))
 	password := str(input["password"])
 	if len([]rune(username)) < 2 || len([]rune(username)) > 64 {
@@ -149,17 +149,18 @@ func (s *AdminService) CreateUser(input map[string]any, adminID int64) (map[stri
 	}
 	var id int64
 	_ = s.store.Read.Get(&id, `SELECT id FROM TF_users WHERE username_norm = ?`, NormalizeIdentity(username))
-	s.audit.Record(adminID, "admin.user.create", "user", strconvID(id), map[string]any{"username": username})
+	s.audit.Record(adminID, "admin.user.create", "user", strconvID(id), map[string]any{"username": username}, firstString(requestID))
 	return s.userRow(id)
 }
 
-func (s *AdminService) UpdateUser(id int64, input map[string]any, adminID int64) (map[string]any, error) {
+func (s *AdminService) UpdateUser(id int64, input map[string]any, adminID int64, requestID ...string) (map[string]any, error) {
 	var current struct {
 		Role   string `db:"role"`
 		Status string `db:"status"`
 	}
+	now := database.Now()
 	sets := []string{"updated_at = ?"}
-	args := []any{database.Now()}
+	args := []any{now}
 	if v, ok := input["display_name"]; ok {
 		sets = append(sets, "display_name = ?")
 		args = append(args, truncate(strings.TrimSpace(str(v)), 191))
@@ -232,46 +233,55 @@ func (s *AdminService) UpdateUser(id int64, input map[string]any, adminID int64)
 		}
 		return nil, respond.Internal("更新用户失败")
 	}
+	if statusChange != nil && *statusChange == "disabled" {
+		if _, err := tx.Exec(`UPDATE TF_sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL`, now, id); err != nil {
+			return nil, respond.Internal("更新用户失败")
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, respond.Internal("更新用户失败")
 	}
-	s.audit.Record(adminID, "admin.user.update", "user", strconvID(id), nil)
+	s.audit.Record(adminID, "admin.user.update", "user", strconvID(id), nil, firstString(requestID))
 	return s.userRow(id)
 }
 
-func (s *AdminService) DeleteUser(id, adminID int64) error {
+func (s *AdminService) DeleteUser(id, adminID int64, requestID ...string) error {
 	if id == adminID {
 		return respond.NewError("VALIDATION_FAILED", "不能删除当前登录的管理员", 422)
-	}
-	var role string
-	if err := s.store.Read.Get(&role, `SELECT role FROM TF_users WHERE id = ?`, id); err != nil {
-		return respond.NewError("VALIDATION_FAILED", "该用户不存在或不允许删除管理员", 409)
-	}
-	if role == "admin" {
-		return respond.NewError("VALIDATION_FAILED", "该用户不存在或不允许删除管理员", 409)
 	}
 	tx, err := s.store.Write.Beginx()
 	if err != nil {
 		return respond.Internal("删除用户失败")
 	}
 	defer func() { _ = tx.Rollback() }()
+	var role string
+	if err := tx.Get(&role, `SELECT role FROM TF_users WHERE id = ?`, id); err != nil {
+		return respond.NewError("VALIDATION_FAILED", "该用户不存在或不允许删除管理员", 409)
+	}
+	if role == "admin" {
+		return respond.NewError("VALIDATION_FAILED", "该用户不存在或不允许删除管理员", 409)
+	}
 	if _, err := tx.Exec(`DELETE FROM TF_sign_tasks WHERE user_id = ?`, id); err != nil {
 		return respond.Internal("删除用户失败")
 	}
 	if _, err := tx.Exec(`DELETE FROM TF_plugin_accounts WHERE user_id = ?`, id); err != nil {
 		return respond.Internal("删除用户失败")
 	}
-	if _, err := tx.Exec(`DELETE FROM TF_users WHERE id = ? AND role <> 'admin'`, id); err != nil {
+	res, err := tx.Exec(`DELETE FROM TF_users WHERE id = ? AND role <> 'admin'`, id)
+	if err != nil {
 		return respond.Internal("删除用户失败")
+	}
+	if affected, _ := res.RowsAffected(); affected != 1 {
+		return respond.NewError("VALIDATION_FAILED", "该用户不存在或不允许删除管理员", 409)
 	}
 	if err := tx.Commit(); err != nil {
 		return respond.Internal("删除用户失败")
 	}
-	s.audit.Record(adminID, "admin.user.delete", "user", strconvID(id), nil)
+	s.audit.Record(adminID, "admin.user.delete", "user", strconvID(id), nil, firstString(requestID))
 	return nil
 }
 
-func (s *AdminService) ResetUserPassword(id int64, password string, adminID int64) error {
+func (s *AdminService) ResetUserPassword(id int64, password string, adminID int64, requestID ...string) error {
 	if len(password) < 8 || len(password) > 1024 {
 		return respond.NewError("VALIDATION_FAILED", "密码长度必须为8到1024个字符", 422)
 	}
@@ -299,7 +309,7 @@ func (s *AdminService) ResetUserPassword(id int64, password string, adminID int6
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	s.audit.Record(adminID, "admin.user.reset_password", "user", strconvID(id), nil)
+	s.audit.Record(adminID, "admin.user.reset_password", "user", strconvID(id), nil, firstString(requestID))
 	return nil
 }
 
@@ -392,7 +402,7 @@ func (s *AdminService) TaskRecords(taskNo string, filters map[string]any) (map[s
 	return s.tasks.Records(task.UserID, task.TaskNo, filters)
 }
 
-func (s *AdminService) RetryTask(taskNo string, adminID int64) (map[string]any, error) {
+func (s *AdminService) RetryTask(taskNo string, adminID int64, requestID ...string) (map[string]any, error) {
 	task, err := s.tasks.FindOwnedForAdmin(taskNo)
 	if err != nil {
 		return nil, err
@@ -401,11 +411,11 @@ func (s *AdminService) RetryTask(taskNo string, adminID int64) (map[string]any, 
 	if err != nil {
 		return nil, err
 	}
-	s.audit.Record(adminID, "admin.task.rerun", "sign_task", taskNo, nil)
+	s.audit.Record(adminID, "admin.task.rerun", "sign_task", taskNo, nil, firstString(requestID))
 	return out, nil
 }
 
-func (s *AdminService) CancelTask(taskNo string, adminID int64) (map[string]any, error) {
+func (s *AdminService) CancelTask(taskNo string, adminID int64, requestID ...string) (map[string]any, error) {
 	task, err := s.tasks.FindOwnedForAdmin(taskNo)
 	if err != nil {
 		return nil, err
@@ -414,7 +424,7 @@ func (s *AdminService) CancelTask(taskNo string, adminID int64) (map[string]any,
 	if err != nil {
 		return nil, err
 	}
-	s.audit.Record(adminID, "admin.task.cancel", "sign_task", taskNo, nil)
+	s.audit.Record(adminID, "admin.task.cancel", "sign_task", taskNo, nil, firstString(requestID))
 	return out, nil
 }
 
@@ -461,7 +471,7 @@ func (s *AdminService) Accounts(filters map[string]any) (map[string]any, error) 
 	return pageResult(items, total, page, perPage, offset), nil
 }
 
-func (s *AdminService) UpdateAccount(id int64, input map[string]any, adminID int64) (map[string]any, error) {
+func (s *AdminService) UpdateAccount(id int64, input map[string]any, adminID int64, requestID ...string) (map[string]any, error) {
 	var acc model.PluginAccount
 	if err := s.store.Read.Get(&acc, `SELECT * FROM TF_plugin_accounts WHERE id = ? AND deleted_at IS NULL`, id); err != nil {
 		return nil, respond.NotFound("平台账号不存在")
@@ -470,11 +480,11 @@ func (s *AdminService) UpdateAccount(id int64, input map[string]any, adminID int
 	if err != nil {
 		return nil, err
 	}
-	s.audit.Record(adminID, "admin.account.update", "plugin_account", strconvID(id), nil)
+	s.audit.Record(adminID, "admin.account.update", "plugin_account", strconvID(id), nil, firstString(requestID))
 	return out, nil
 }
 
-func (s *AdminService) DeleteAccount(id, adminID int64) error {
+func (s *AdminService) DeleteAccount(id, adminID int64, requestID ...string) error {
 	var acc model.PluginAccount
 	if err := s.store.Read.Get(&acc, `SELECT * FROM TF_plugin_accounts WHERE id = ? AND deleted_at IS NULL`, id); err != nil {
 		return respond.NotFound("平台账号不存在")
@@ -482,11 +492,11 @@ func (s *AdminService) DeleteAccount(id, adminID int64) error {
 	if err := s.accounts.Delete(acc.UserID, id); err != nil {
 		return err
 	}
-	s.audit.Record(adminID, "admin.account.delete", "plugin_account", strconvID(id), nil)
+	s.audit.Record(adminID, "admin.account.delete", "plugin_account", strconvID(id), nil, firstString(requestID))
 	return nil
 }
 
-func (s *AdminService) AccountAction(id int64, action string, adminID int64) (map[string]any, error) {
+func (s *AdminService) AccountAction(id int64, action string, adminID int64, requestID ...string) (map[string]any, error) {
 	var acc model.PluginAccount
 	if err := s.store.Read.Get(&acc, `SELECT * FROM TF_plugin_accounts WHERE id = ? AND deleted_at IS NULL`, id); err != nil {
 		return nil, respond.NotFound("平台账号不存在")
@@ -495,7 +505,7 @@ func (s *AdminService) AccountAction(id int64, action string, adminID int64) (ma
 	if err != nil {
 		return nil, err
 	}
-	s.audit.Record(adminID, "admin.account.action", "plugin_account", strconvID(id), map[string]any{"action": action})
+	s.audit.Record(adminID, "admin.account.action", "plugin_account", strconvID(id), map[string]any{"action": action}, firstString(requestID))
 	return out, nil
 }
 

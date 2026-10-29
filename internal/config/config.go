@@ -32,6 +32,7 @@ type Config struct {
 	SessionTTL            time.Duration
 	SessionSecure         bool
 	CORSAllowedOrigins    []string
+	TrustedProxyCIDRs     []string
 	TaskLockTimeout       time.Duration
 	SignWorkerEnabled     bool
 	SignWorkerCount       int
@@ -54,7 +55,10 @@ type Config struct {
 func Load() (*Config, error) {
 	// 数据目录优先，其次当前目录：容器里 /data 是持久卷，配置必须落在这里。
 	dataDir := env("TF_DATA_DIR", defaultDataDir())
-	_ = godotenv.Load(append([]string{filepath.Join(dataDir, ".env")}, envFileCandidates()...)...)
+	candidates := append([]string{filepath.Join(dataDir, ".env")}, envFileCandidates()...)
+	if files := existingEnvFiles(candidates); len(files) > 0 {
+		_ = godotenv.Load(files...)
+	}
 	c := &Config{
 		AppEnv:                env("APP_ENV", "production"),
 		HTTPAddr:              env("HTTP_ADDR", ":8787"),
@@ -69,6 +73,7 @@ func Load() (*Config, error) {
 		SessionTTL:            time.Duration(envInt("SESSION_TTL_DAYS", 30)) * 24 * time.Hour,
 		SessionSecure:         envBool("SESSION_SECURE", false),
 		CORSAllowedOrigins:    splitCSV(env("CORS_ALLOWED_ORIGINS", "")),
+		TrustedProxyCIDRs:     splitCSV(env("TRUSTED_PROXY_CIDRS", "127.0.0.0/8,::1/128")),
 		TaskLockTimeout:       time.Duration(envInt("TASK_LOCK_TIMEOUT_SECONDS", 7200)) * time.Second,
 		SignWorkerEnabled:     envBool("SIGN_WORKER_ENABLED", true),
 		SignWorkerCount:       envInt("SIGN_WORKER_COUNT", defaultWorkers()),
@@ -121,6 +126,22 @@ func (c *Config) Reload() {
 	c.CORSAllowedOrigins = fresh.CORSAllowedOrigins
 }
 
+// ApplyInstall 把安装向导刚刚写入的运行时配置同步到内存和进程环境。
+// godotenv.Load 不会覆盖已有环境变量，安装重试时必须显式同步，否则
+// 内存中的 APP_KEY 会和磁盘 .env 不一致。
+func (c *Config) ApplyInstall(appKey, fingerprintKey string, sessionSecure bool, origins []string) {
+	c.mu.Lock()
+	c.AppKey = appKey
+	c.FingerprintKey = fingerprintKey
+	c.SessionSecure = sessionSecure
+	c.CORSAllowedOrigins = origins
+	c.mu.Unlock()
+	_ = os.Setenv("APP_KEY", appKey)
+	_ = os.Setenv("CREDENTIAL_FINGERPRINT_KEY", fingerprintKey)
+	_ = os.Setenv("SESSION_SECURE", strconv.FormatBool(sessionSecure))
+	_ = os.Setenv("CORS_ALLOWED_ORIGINS", strings.Join(origins, ","))
+}
+
 func (c *Config) SecretKey() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -166,6 +187,22 @@ func defaultWorkers() int {
 		n = 8
 	}
 	return n
+}
+
+func existingEnvFiles(paths []string) []string {
+	out := make([]string, 0, len(paths))
+	seen := map[string]bool{}
+	for _, path := range paths {
+		if path == "" || seen[path] {
+			continue
+		}
+		seen[path] = true
+		info, err := os.Stat(path)
+		if err == nil && !info.IsDir() {
+			out = append(out, path)
+		}
+	}
+	return out
 }
 
 func envFileCandidates() []string {

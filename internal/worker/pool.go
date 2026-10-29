@@ -39,7 +39,7 @@ func (p *Pool) Start(ctx context.Context) {
 			id := p.workerID("sign", i)
 			p.goWorker(ctx, "sign-worker-"+itoa(i), 2*time.Second, func() {
 				if task, ok := p.tasks.Claim(id, service.QueueDefault); ok {
-					p.tasks.ExecuteTask(task, id)
+					p.tasks.ExecuteTask(ctx, task, id)
 				}
 			})
 		}
@@ -48,7 +48,7 @@ func (p *Pool) Start(ctx context.Context) {
 		id := p.workerID("tieba", 1)
 		p.goWorker(ctx, "tieba-retry", 30*time.Second, func() {
 			if task, ok := p.tasks.Claim(id, service.QueueTiebaRetry); ok {
-				p.tasks.ExecuteTask(task, id)
+				p.tasks.ExecuteTask(ctx, task, id)
 			}
 		})
 	}
@@ -57,13 +57,14 @@ func (p *Pool) Start(ctx context.Context) {
 			id := p.workerID("live", i)
 			p.goWorker(ctx, "live-worker-"+itoa(i), 5*time.Second, func() {
 				if task, ok := p.tasks.Claim(id, service.QueueBilibiliLive); ok {
-					p.live.RunSession(task, id)
+					p.live.RunSession(ctx, task, id)
 				}
 			})
 		}
 	}
 	if p.cfg.MailWorkerEnabled {
 		p.goWorker(ctx, "mail-worker", p.cfg.MailWorkerInterval, func() { p.mail.ProcessPending(20) })
+		p.goLoop(ctx, "daily-summary", time.Minute, func() { p.mail.SendDailySummaries() })
 	}
 	if p.cfg.MaintenanceEnabled {
 		p.goWorker(ctx, "maintenance", time.Minute, func() { p.maintain() })

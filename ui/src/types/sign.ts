@@ -14,7 +14,7 @@ export interface User {
   role: 'user' | 'admin';
   status: 'active' | 'disabled';
   daily_sign_email?: boolean;
-  push_channel?: 'none' | 'pushplus' | 'serverchan' | 'bark';
+  push_channel?: 'none' | 'wecom' | 'pushplus' | 'serverchan' | 'bark';
   push_token?: string;
   has_password?: boolean;
   qq_binding?: {

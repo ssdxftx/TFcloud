@@ -7,6 +7,8 @@ import (
 	"os"
 	"regexp"
 	"strings"
+
+	"tfcloud/internal/sign"
 )
 
 var regexpSixDigits = regexp.MustCompile(`^\d{6}$`)
@@ -99,4 +101,25 @@ func HostID() string {
 		host = "tfcloud"
 	}
 	return host
+}
+
+// isCredentialFailureCode 判断错误码是否意味着平台凭据已经不可用。
+func isCredentialFailureCode(code string) bool {
+	switch code {
+	case "PLUGIN_CREDENTIAL_EXPIRED", "PLUGIN_CREDENTIAL_INVALID", "PLUGIN_CREDENTIAL_MISSING",
+		"CREDENTIAL_DECRYPT_FAILED", "CREDENTIAL_FORMAT_INVALID", "APP_KEY_MISSING":
+		return true
+	default:
+		return false
+	}
+}
+
+// credentialFailureFromRecords 从插件返回的执行记录中提取凭据失效信息。
+func credentialFailureFromRecords(records []sign.Record) (string, string) {
+	for _, rec := range records {
+		if isCredentialFailureCode(rec.Code) {
+			return rec.Code, rec.Message
+		}
+	}
+	return "", ""
 }

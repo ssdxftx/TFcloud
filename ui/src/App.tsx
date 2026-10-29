@@ -1,6 +1,6 @@
 import { Spinner } from '@heroui/spinner';
 import { lazy, Suspense, useEffect } from 'react';
-import { Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom';
+import { Link, Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom';
 
 import { AUTH_TOKEN_KEY } from '@/api/client';
 import { ConfirmCardHost } from '@/components/confirm_card';
@@ -8,7 +8,7 @@ import PageBackground from '@/components/page_background';
 import PageLoadingBar from '@/components/page_loading_bar';
 import Toaster from '@/components/toaster';
 import { AuthProvider, useSignAuth } from '@/contexts/auth';
-import { SiteProvider } from '@/contexts/site';
+import { SiteProvider, useSite } from '@/contexts/site';
 import SignLayout from '@/layouts/sign_layout';
 
 const HomePage = lazy(() => import('@/pages/home'));
@@ -85,6 +85,27 @@ function LegacyConsoleRedirect () {
   return <Navigate to={`/TFYT${legacyPath}${location.search}`} replace />;
 }
 
+const maintenanceAllowedPaths = ['/login', '/register', '/qq-register', '/forgot-password', '/install'];
+
+function MaintenanceGate ({ children }: { children: React.ReactNode }) {
+  const site = useSite();
+  const { user } = useSignAuth();
+  const location = useLocation();
+  if (!site.maintenance_mode || user?.role === 'admin' || maintenanceAllowedPaths.some((path) => location.pathname.startsWith(path))) {
+    return <>{children}</>;
+  }
+  return (
+    <div className='flex min-h-screen items-center justify-center bg-background px-6 text-foreground'>
+      <div className='max-w-md rounded-[28px] border border-warning/25 bg-content1 p-8 text-center shadow-xl'>
+        <p className='text-xs font-semibold tracking-[0.2em] text-warning'>MAINTENANCE</p>
+        <h1 className='mt-3 text-2xl font-semibold'>{site.name || '天方云签'} 正在维护</h1>
+        <p className='mt-3 text-sm leading-6 text-default-500'>站点暂时停止对外服务，维护完成后即可恢复。管理员仍可登录后台处理事务。</p>
+        <Link to='/login' className='mt-6 inline-flex rounded-xl bg-primary px-4 py-2 text-sm font-medium text-white'>管理员登录</Link>
+      </div>
+    </div>
+  );
+}
+
 export default function App () {
   usePrefetchRoutes();
   return (
@@ -94,6 +115,7 @@ export default function App () {
       <PageLoadingBar />
       <Toaster />
       <ConfirmCardHost />
+      <MaintenanceGate>
       <Suspense fallback={<LoadingScreen />}>
         <Routes>
             <Route path='/' element={<HomePage />} />
@@ -142,6 +164,7 @@ export default function App () {
             <Route path='*' element={<NotFoundPage />} />
         </Routes>
       </Suspense>
+      </MaintenanceGate>
     </AuthProvider>
     </SiteProvider>
   );

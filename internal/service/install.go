@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/joho/godotenv"
+
 	"tfcloud/internal/config"
 	"tfcloud/internal/database"
 	"tfcloud/internal/httpapi/respond"
@@ -128,8 +130,23 @@ func (s *InstallService) Run(in InstallInput) (map[string]any, error) {
 		return nil, respond.NewError("VALIDATION_FAILED", "管理员密码长度必须为8到1024个字符", 422)
 	}
 
-	appKey := "base64:" + base64Std(secure.RandomBytes(32))
-	fingerprintKey := secure.RandomHex(32)
+	envPath := filepath.Join(s.cfg.DataDir, ".env")
+	existingEnv, _ := godotenv.Read(envPath)
+	appKey := s.cfg.SecretKey()
+	if appKey == "" {
+		appKey = strings.TrimSpace(existingEnv["APP_KEY"])
+	}
+	if appKey == "" {
+		appKey = "base64:" + base64Std(secure.RandomBytes(32))
+	}
+	fingerprintKey := s.cfg.FingerprintSecret()
+	if fingerprintKey == "" {
+		fingerprintKey = strings.TrimSpace(existingEnv["CREDENTIAL_FINGERPRINT_KEY"])
+	}
+	if fingerprintKey == "" {
+		fingerprintKey = secure.RandomHex(32)
+	}
+	sessionSecure := in.SessionSecure || scheme == "https"
 
 	envLines := map[string]string{
 		"APP_ENV":                      "production",
@@ -140,7 +157,7 @@ func (s *InstallService) Run(in InstallInput) (map[string]any, error) {
 		"SQLITE_PATH":                  s.cfg.Database,
 		"HTTP_ADDR":                    s.cfg.HTTPAddr,
 		"CORS_ALLOWED_ORIGINS":         origin,
-		"SESSION_SECURE":               strconv.FormatBool(in.SessionSecure || scheme == "https"),
+		"SESSION_SECURE":               strconv.FormatBool(sessionSecure),
 		"SIGN_WORKER_ENABLED":          "true",
 		"SIGN_WORKER_COUNT":            strconv.Itoa(s.cfg.SignWorkerCount),
 		"SIGN_SCHEDULER_ENABLED":       "true",
@@ -152,10 +169,14 @@ func (s *InstallService) Run(in InstallInput) (map[string]any, error) {
 		"UPDATE_VERSION_URL":           s.cfg.UpdateVersionURL,
 		"UPDATE_PAGE_URL":              s.cfg.UpdatePageURL,
 	}
-	if err := writeEnv(filepath.Join(s.cfg.DataDir, ".env"), envLines); err != nil {
+	for key, value := range existingEnv {
+		if _, ok := envLines[key]; !ok {
+			envLines[key] = value
+		}
+	}
+	if err := writeEnv(envPath, envLines); err != nil {
 		return nil, respond.Internal("写入配置文件失败：" + err.Error())
 	}
-	s.cfg.Reload()
 
 	hash, err := secure.HashPassword(in.Admin.Password)
 	if err != nil {
@@ -198,6 +219,7 @@ func (s *InstallService) Run(in InstallInput) (map[string]any, error) {
 	if err := tx.Commit(); err != nil {
 		return nil, respond.Internal("初始化数据库失败")
 	}
+	s.cfg.ApplyInstall(appKey, fingerprintKey, sessionSecure, []string{origin})
 
 	marker := fmt.Sprintf(`{"installed_at":%q,"site_url":%q,"admin":%q,"version":1}`,
 		time.Now().Format(time.RFC3339), siteURL, username)

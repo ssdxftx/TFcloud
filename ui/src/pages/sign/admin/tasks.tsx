@@ -11,6 +11,7 @@ import { LuEye, LuRefreshCw, LuSquare } from 'react-icons/lu';
 import { useNavigate } from 'react-router-dom';
 
 import { apiRequest } from '@/api/client';
+import { useSite } from '@/contexts/site';
 import StatusChip from '@/components/sign/status_chip';
 import type { Paginated, Plugin, SignTask } from '@/types/sign';
 import { actionNames, errorMessage, formatDateTime, pluginNames, shortTaskNo } from '@/utils/sign';
@@ -19,6 +20,7 @@ type AdminTask = SignTask & { user_id: number };
 const perPage = 20;
 
 export default function AdminTasksPage () {
+  useSite();
   const [result, setResult] = useState<Paginated<AdminTask> | null>(null);
   const [plugins, setPlugins] = useState<Plugin[]>([]);
   const [status, setStatus] = useState('all');

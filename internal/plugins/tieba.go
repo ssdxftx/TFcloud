@@ -208,8 +208,11 @@ func (c *tiebaClient) tbs(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if resp.Status >= 500 || resp.Status == 0 {
-		return "", sign.Fail("UPSTREAM_HTTP_ERROR", "贴吧服务暂时不可用", 502)
+	if resp.Status == 0 || resp.Status == 429 || resp.Status >= 500 {
+		return "", sign.Fail("UPSTREAM_REQUEST_FAILED", "贴吧服务暂时不可用", 502)
+	}
+	if resp.JSON == nil {
+		return "", sign.Fail("TIEBA_RESPONSE_INVALID", "贴吧返回了无法识别的响应", 502)
 	}
 	if sign.ValueInt(resp.JSON["is_login"]) != 1 {
 		return "", sign.Fail("PLUGIN_CREDENTIAL_EXPIRED", "贴吧登录状态已经失效", 422)
@@ -448,6 +451,14 @@ func (c *tiebaClient) signForum(ctx context.Context, forum tiebaForum, tbs strin
 		return detail
 	}
 
+	if resp.JSON == nil {
+		detail.record = sign.Record{
+			Key: "forum:" + forum.FID, Action: "forum_sign", Status: "failed",
+			TargetType: "forum", TargetID: forum.FID, TargetName: forum.Name,
+			Code: "UPSTREAM_REQUEST_FAILED", Message: "贴吧返回了无法识别的响应",
+		}
+		return detail
+	}
 	code := sign.ValueString(resp.JSON["error_code"])
 	status := "failed"
 	message := firstText(resp.JSON["error_msg"], "签到失败")

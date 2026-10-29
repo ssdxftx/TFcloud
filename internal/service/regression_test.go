@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -379,7 +380,8 @@ func TestLiveOutcome(t *testing.T) {
 		{3, 0, 0, "succeeded", 3, 0},
 		{2, 1, 0, "partial", 2, 1},
 		{2, 0, 1, "partial", 2, 1},
-		{0, 2, 1, "failed", 0, 3},
+		{0, 2, 1, "partial", 0, 3},
+		{0, 0, 2, "failed", 0, 2},
 	}
 	for _, tc := range cases {
 		status, success, failed := liveOutcome(tc.completed, tc.partial, tc.failed)
@@ -387,6 +389,63 @@ func TestLiveOutcome(t *testing.T) {
 			t.Fatalf("liveOutcome(%d,%d,%d) = (%s,%d,%d)，期望 (%s,%d,%d)",
 				tc.completed, tc.partial, tc.failed, status, success, failed, tc.status, tc.success, tc.failedCount)
 		}
+	}
+}
+
+func TestLiveSettingsAndDuration(t *testing.T) {
+	settings := map[string]any{
+		"live_heartbeat_count":     float64(123),
+		"live_max_rooms":           float64(7),
+		"live_max_failures":        float64(3),
+		"live_skip_level_20_medal": true,
+	}
+	if got := liveTargetHeartbeats(settings); got != 123 {
+		t.Fatalf("心跳数应读取 live_heartbeat_count，实际 %d", got)
+	}
+	if got := liveTargetHeartbeats(map[string]any{"live_target_heartbeats": "42"}); got != 42 {
+		t.Fatalf("应兼容旧 live_target_heartbeats，实际 %d", got)
+	}
+	if got := liveMaxRooms(settings); got != 7 {
+		t.Fatalf("直播房间数错误: %d", got)
+	}
+	if got := liveMaxFailures(settings); got != 3 {
+		t.Fatalf("失败阈值错误: %d", got)
+	}
+	if got := liveSessionDuration(5, 70); got < 5*time.Hour {
+		t.Fatalf("默认 5 房间 x70 次心跳的会话时长过短: %s", got)
+	}
+	if got := liveSessionDuration(100, 180); got != liveMaxDuration {
+		t.Fatalf("会话时长应封顶 %s，实际 %s", liveMaxDuration, got)
+	}
+	if got := liveSessionDuration(1, 1); got != liveMinDuration {
+		t.Fatalf("会话时长应有下限 %s，实际 %s", liveMinDuration, got)
+	}
+}
+
+func TestMergeTaskStatusKeepsFailuresVisible(t *testing.T) {
+	counts := map[string]int{"total": 5, "success": 0, "already": 0, "skipped": 0, "failed": 5}
+	if got := mergeTaskStatus("succeeded", counts, true); got != "failed" {
+		t.Fatalf("仍有失败且无成功时应为 failed，实际 %s", got)
+	}
+	counts["success"] = 1
+	if got := mergeTaskStatus("succeeded", counts, true); got != "partial" {
+		t.Fatalf("仍有失败但有成功时应为 partial，实际 %s", got)
+	}
+	if got := mergeTaskStatus("succeeded", counts, false); got != "succeeded" {
+		t.Fatalf("非补签叠加不应改写状态，实际 %s", got)
+	}
+}
+
+func TestCredentialFailureFromRecords(t *testing.T) {
+	code, _ := credentialFailureFromRecords([]sign.Record{
+		{Status: "succeeded"},
+		{Status: "failed", Code: "PLUGIN_CREDENTIAL_EXPIRED", Message: "expired"},
+	})
+	if code != "PLUGIN_CREDENTIAL_EXPIRED" {
+		t.Fatalf("应识别凭据失效记录，实际 %q", code)
+	}
+	if code, _ := credentialFailureFromRecords([]sign.Record{{Status: "failed", Code: "X"}}); code != "" {
+		t.Fatalf("普通失败不应识别为凭据失效: %q", code)
 	}
 }
 
@@ -592,6 +651,105 @@ func TestUserSearchEscapesWildcards(t *testing.T) {
 	}
 	if total, _ := out["total"].(int); total != 1 {
 		t.Fatalf("百分号应按字面量匹配，实际命中 %d 条", total)
+	}
+}
+
+func TestDailySummaryQueuesOncePerDay(t *testing.T) {
+	store := newTestStore(t)
+	userID := insertTestUser(t, store)
+	accountID := insertTestAccount(t, store, userID)
+	insertTestTask(t, store, userID, accountID, "daily-summary-task", QueueDefault)
+	if _, err := store.Write.Exec(`UPDATE TF_users SET email='u1@example.com', email_norm='u1@example.com',
+		daily_sign_email=1 WHERE id=?`, userID); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{}
+	settings := NewSettings(store, cfg)
+	if _, err := settings.Update("mail", map[string]any{
+		"enabled": true, "daily_summary_hour": time.Now().Hour(),
+	}, userID); err != nil {
+		t.Fatal(err)
+	}
+	mail := NewMail(store, cfg, settings, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if n := mail.SendDailySummaries(); n != 1 {
+		t.Fatalf("首次应排队一封汇总邮件，实际 %d", n)
+	}
+	if n := mail.SendDailySummaries(); n != 0 {
+		t.Fatalf("同一天不应重复排队，实际 %d", n)
+	}
+	var tasks, events int
+	if err := store.Read.Get(&tasks, `SELECT COUNT(1) FROM TF_mail_tasks WHERE template_code='daily_sign_summary'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Read.Get(&events, `SELECT COUNT(1) FROM TF_notification_events WHERE event_type='daily_sign_summary'`); err != nil {
+		t.Fatal(err)
+	}
+	if tasks != 1 || events != 1 {
+		t.Fatalf("汇总任务与事件应各有一条，实际 tasks=%d events=%d", tasks, events)
+	}
+}
+
+func TestAuditRecordKeepsRequestID(t *testing.T) {
+	store := newTestStore(t)
+	audit := NewAudit(store)
+	audit.Record(1, "test.action", "test", "1", nil, "req-123")
+	var requestID *string
+	if err := store.Read.Get(&requestID, `SELECT request_id FROM TF_audit_logs WHERE action='test.action'`); err != nil {
+		t.Fatal(err)
+	}
+	if requestID == nil || *requestID != "req-123" {
+		t.Fatalf("审计请求 ID 未保存: %#v", requestID)
+	}
+}
+
+func TestMailBodyForStorageKeepsTextOnlyBody(t *testing.T) {
+	body := mailBodyForStorage("", "第一行\n<script>alert(1)</script>")
+	if body == "" {
+		t.Fatal("纯文本邮件也必须生成可发送的正文")
+	}
+	if !strings.Contains(body, "第一行") || strings.Contains(body, "<script>") {
+		t.Fatalf("纯文本正文应被保留并转义，实际 %q", body)
+	}
+	if got := mailBodyForStorage("<b>hi</b>", "ignored"); got != "<b>hi</b>" {
+		t.Fatalf("HTML 正文应原样保留，实际 %q", got)
+	}
+}
+
+func TestAdminDisableRevokesSessions(t *testing.T) {
+	store := newTestStore(t)
+	userID := insertTestUser(t, store)
+	now := database.Now()
+	if _, err := store.Write.Exec(`INSERT INTO TF_sessions(user_id, token_hash, expires_at, created_at)
+		VALUES(?, 'token-1', ?, ?)`, userID, database.Ts(time.Now().Add(time.Hour)), now); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewAdmin(store, &config.Config{}, nil, nil, nil, NewAudit(store), nil, nil, nil)
+	if _, err := svc.UpdateUser(userID, map[string]any{"status": "disabled"}, 999); err != nil {
+		t.Fatalf("停用用户失败: %v", err)
+	}
+	var revoked *string
+	if err := store.Read.Get(&revoked, `SELECT revoked_at FROM TF_sessions WHERE user_id=?`, userID); err != nil {
+		t.Fatal(err)
+	}
+	if revoked == nil {
+		t.Fatal("停用用户后应撤销现有会话")
+	}
+}
+
+func TestRevokeUserSessionsReturnsCount(t *testing.T) {
+	store := newTestStore(t)
+	userID := insertTestUser(t, store)
+	now := database.Now()
+	for _, token := range []string{"t1", "t2"} {
+		if _, err := store.Write.Exec(`INSERT INTO TF_sessions(user_id, token_hash, expires_at, created_at)
+			VALUES(?, ?, ?, ?)`, userID, token, database.Ts(time.Now().Add(time.Hour)), now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	auth := NewAuth(store, &config.Config{}, nil, nil)
+	n, err := auth.RevokeUserSessions(userID)
+	if err != nil || n != 2 {
+		t.Fatalf("应返回撤销数量 2，实际 %d, %v", n, err)
 	}
 }
 

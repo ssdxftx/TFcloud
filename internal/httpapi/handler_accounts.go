@@ -69,7 +69,7 @@ func (s *Server) platformPassword(w http.ResponseWriter, r *http.Request) {
 	}
 	s.Audit.Record(userID(r), "account.create", "plugin_account", strOf(account["id"]), map[string]any{
 		"plugin_code": code, "method": "password",
-	})
+	}, respond.RequestID(r.Context()))
 	respond.Created(w, r, map[string]any{
 		"status":  "succeeded",
 		"account": account,
@@ -136,7 +136,7 @@ func (s *Server) accountsStore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Audit.Record(userID(r), "account.create", "plugin_account", strOf(out["id"]),
-		map[string]any{"plugin_code": strOf(payload["plugin_code"])})
+		map[string]any{"plugin_code": strOf(payload["plugin_code"])}, respond.RequestID(r.Context()))
 	respond.Created(w, r, out)
 }
 
@@ -170,7 +170,7 @@ func (s *Server) accountsUpdate(w http.ResponseWriter, r *http.Request) {
 		respond.Fail(w, r, err)
 		return
 	}
-	s.Audit.Record(userID(r), "account.update", "plugin_account", strOf(out["id"]), nil)
+	s.Audit.Record(userID(r), "account.update", "plugin_account", strOf(out["id"]), nil, respond.RequestID(r.Context()))
 	respond.Message(w, r, out, "账号已更新")
 }
 
@@ -184,7 +184,7 @@ func (s *Server) accountsDestroy(w http.ResponseWriter, r *http.Request) {
 		respond.Fail(w, r, err)
 		return
 	}
-	s.Audit.Record(userID(r), "account.delete", "plugin_account", strOf(id), nil)
+	s.Audit.Record(userID(r), "account.delete", "plugin_account", strOf(id), nil, respond.RequestID(r.Context()))
 	respond.Message(w, r, map[string]any{"deleted": true}, "账号已删除")
 }
 
@@ -200,7 +200,7 @@ func (s *Server) accountsAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Audit.Record(userID(r), "account.action", "plugin_account", strOf(id),
-		map[string]any{"action": path(r, "action")})
+		map[string]any{"action": path(r, "action")}, respond.RequestID(r.Context()))
 	respond.Created(w, r, out)
 }
 

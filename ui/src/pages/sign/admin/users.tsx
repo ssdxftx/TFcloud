@@ -11,6 +11,7 @@ import { toast } from 'react-hot-toast';
 import { LuKeyRound, LuPencil, LuPlus, LuSearch, LuShieldOff, LuTrash2 } from 'react-icons/lu';
 
 import { apiRequest } from '@/api/client';
+import { useSite } from '@/contexts/site';
 import { confirmCard } from '@/components/confirm_card';
 import StatusChip from '@/components/sign/status_chip';
 import { useSignAuth } from '@/contexts/auth';
@@ -24,6 +25,7 @@ interface UserForm {
 const blank: UserForm = { username: '', password: '', display_name: '', email: '', qq: '', role: 'user', status: 'active' };
 
 export default function AdminUsersPage () {
+  useSite();
   const [result, setResult] = useState<Paginated<User> | null>(null);
   const [page, setPage] = useState(1);
   const [keyword, setKeyword] = useState('');

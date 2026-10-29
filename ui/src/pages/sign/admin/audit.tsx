@@ -6,10 +6,12 @@ import { useEffect, useState } from 'react';
 import { toast } from 'react-hot-toast';
 
 import { apiRequest } from '@/api/client';
+import { useSite } from '@/contexts/site';
 import type { AuditLog } from '@/types/sign';
 import { errorMessage, formatDateTime } from '@/utils/sign';
 
 export default function AdminAuditPage () {
+  useSite();
   const [rows, setRows] = useState<AuditLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);

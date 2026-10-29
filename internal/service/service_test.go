@@ -112,4 +112,7 @@ func TestRetryPolicy(t *testing.T) {
 	if extendedAttemptLimit(2, 24) != 24 {
 		t.Fatal("不应降低原有上限")
 	}
+	if extendedAttemptLimit(MaxTiebaAttempts, MaxTiebaAttempts) != MaxTiebaAttempts {
+		t.Fatal("贴吧补签次数应有上限")
+	}
 }

@@ -21,6 +21,7 @@ const (
 	QueueTiebaRetry   = "tieba_retry"
 	QueueBilibiliLive = "bilibili_live"
 	MaxAttempts       = 24
+	MaxTiebaAttempts  = 96
 )
 
 type TaskService struct {
@@ -546,7 +547,7 @@ func (s *TaskService) Claim(workerID, queue string) (*model.SignTask, bool) {
 	return &task, true
 }
 
-func (s *TaskService) ExecuteTask(task *model.SignTask, workerID string) {
+func (s *TaskService) ExecuteTask(ctx context.Context, task *model.SignTask, workerID string) {
 	plugin, err := s.registry.Get(task.PluginCode)
 	if err != nil {
 		s.failTask(task, 0, err, time.Now())
@@ -599,7 +600,7 @@ func (s *TaskService) ExecuteTask(task *model.SignTask, workerID string) {
 	}
 
 	reporter := &progressReporter{svc: s, task: task, runID: runID}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 	result, execErr := plugin.Execute(ctx, &sign.Context{
 		UserID:      task.UserID,
@@ -619,6 +620,9 @@ func (s *TaskService) ExecuteTask(task *model.SignTask, workerID string) {
 
 func (s *TaskService) completeTask(task *model.SignTask, runID int64, plugin sign.Plugin,
 	result *sign.Result, started time.Time, reporter *progressReporter) {
+	if result == nil {
+		result = &sign.Result{}
+	}
 	counts := reporter.counts()
 	if !reporter.used {
 		counts = map[string]int{"total": 0, "success": 0, "already": 0, "skipped": 0, "failed": 0}
@@ -638,6 +642,8 @@ func (s *TaskService) completeTask(task *model.SignTask, runID int64, plugin sig
 		}
 	}
 	taskCounts, mergedRetry := mergeRetryCounts(task, counts)
+	runStatus = mergeTaskStatus(runStatus, taskCounts, mergedRetry)
+	credentialCode, credentialMessage := credentialFailureFromRecords(result.Records)
 
 	finishedAt := database.Now()
 	duration := int(time.Since(started).Milliseconds())
@@ -654,10 +660,13 @@ func (s *TaskService) completeTask(task *model.SignTask, runID int64, plugin sig
 	}
 
 	retryFailure := transientFailure(task.PluginCode, result)
+	if credentialCode != "" {
+		retryFailure = nil
+	}
 	taskStatus := runStatus
 	var availableAt any
 	maxAttempts := task.MaxAttempts
-	if retryFailure != nil {
+	if retryFailure != nil && task.Attempts < MaxTiebaAttempts {
 		taskStatus = "retrying"
 		delay := retryDelaySeconds(task.Attempts)
 		availableAt = database.Ts(time.Now().Add(time.Duration(delay) * time.Second))
@@ -672,7 +681,10 @@ func (s *TaskService) completeTask(task *model.SignTask, runID int64, plugin sig
 	var errCode, errMessage any
 	if retryFailure != nil {
 		errCode = retryFailure["code"]
-		errMessage = truncate(str(retryFailure["message"]), 500)
+		errMessage = RedactString(truncate(str(retryFailure["message"]), 500))
+	} else if credentialCode != "" {
+		errCode = credentialCode
+		errMessage = RedactString(truncate(credentialMessage, 500))
 	}
 
 	tx, err := s.store.Write.Beginx()
@@ -704,6 +716,7 @@ func (s *TaskService) completeTask(task *model.SignTask, runID int64, plugin sig
 	if accountErrCode == nil && runStatus == "failed" {
 		accountErrCode = "PLUGIN_EXECUTION_FAILED"
 	}
+	accountCredentialFailed := credentialCode != "" || isCredentialFailureCode(str(errCode))
 	profileJSON := any(nil)
 	if len(result.ProfilePatch) > 0 {
 		var acc model.PluginAccount
@@ -713,8 +726,9 @@ func (s *TaskService) completeTask(task *model.SignTask, runID int64, plugin sig
 		}
 	}
 	if _, err := tx.Exec(`UPDATE TF_plugin_accounts SET last_run_at=?, last_error_code=?, last_error_message=?,
+		status=CASE WHEN ? THEN 'credential_expired' ELSE status END,
 		profile_json=COALESCE(?, profile_json), updated_at=? WHERE id=?`,
-		finishedAt, accountErrCode, errMessage, profileJSON, finishedAt, task.AccountID); err != nil {
+		finishedAt, accountErrCode, errMessage, accountCredentialFailed, profileJSON, finishedAt, task.AccountID); err != nil {
 		return
 	}
 	if err := tx.Commit(); err != nil {
@@ -731,9 +745,20 @@ func (s *TaskService) completeTask(task *model.SignTask, runID int64, plugin sig
 	if s.audit != nil {
 		s.audit.Record(task.UserID, "sign.task.finished", "sign_task", task.TaskNo, map[string]any{
 			"status": taskStatus, "failed": counts["failed"], "total": counts["total"],
-		})
+		}, deref(task.RequestID))
 	}
 	_ = plugin
+}
+
+// mergeTaskStatus 在贴吧补签叠加计数后，避免出现「succeeded 但仍有失败」。
+func mergeTaskStatus(runStatus string, counts map[string]int, merged bool) string {
+	if !merged || runStatus != "succeeded" || counts["failed"] <= 0 {
+		return runStatus
+	}
+	if counts["success"]+counts["already"] > 0 {
+		return "partial"
+	}
+	return "failed"
 }
 
 // mergeRetryCounts 在贴吧补签只处理失败贴吧时，把本次结果叠加到任务累计计数上。
@@ -776,9 +801,10 @@ func (s *TaskService) failTask(task *model.SignTask, runID int64, execErr error,
 		message = signErr.Message
 	}
 	message = RedactString(truncate(message, 500))
-	credentialExpired := code == "PLUGIN_CREDENTIAL_EXPIRED" || code == "PLUGIN_CREDENTIAL_INVALID"
+	credentialExpired := isCredentialFailureCode(code)
 	userDisabled := code == "USER_DISABLED"
-	continuous := task.PluginCode == "tieba" && code == "UPSTREAM_REQUEST_FAILED"
+	continuous := task.PluginCode == "tieba" && code == "UPSTREAM_REQUEST_FAILED" &&
+		task.Attempts < MaxTiebaAttempts
 	ordinary := task.PluginCode != "tieba" && task.Attempts < task.MaxAttempts
 	retryable := !credentialExpired && !userDisabled && (continuous || ordinary)
 
@@ -836,23 +862,29 @@ func (s *TaskService) RecoverStale(timeoutSeconds, limit int) int {
 	if limit <= 0 {
 		limit = 100
 	}
-	cutoff := database.Ts(time.Now().Add(-time.Duration(timeoutSeconds) * time.Second))
-	liveTimeout := timeoutSeconds
-	if minLive := int(liveMaxDuration.Seconds()) + 300; liveTimeout < minLive {
-		liveTimeout = minLive
-	}
-	liveCutoff := database.Ts(time.Now().Add(-time.Duration(liveTimeout) * time.Second))
+	nowTime := time.Now()
+	cutoff := database.Ts(nowTime.Add(-time.Duration(timeoutSeconds) * time.Second))
+	liveCutoff := database.Ts(nowTime.Add(-liveRecoverFallback))
+	liveRecent := database.Ts(nowTime.Add(-liveRecoverIdle))
+	liveNow := database.Ts(nowTime)
 	rows := []model.SignTask{}
 	if err := s.store.Read.Select(&rows, `SELECT * FROM TF_sign_tasks
-		WHERE status='running' AND locked_at IS NOT NULL AND locked_at < ?
-		  AND (queue_name <> 'bilibili_live' OR locked_at < ?)
-		ORDER BY locked_at LIMIT ?`, cutoff, liveCutoff, limit); err != nil {
+		WHERE status='running' AND locked_at IS NOT NULL AND (
+		  (queue_name <> ? AND locked_at < ?)
+		  OR (queue_name = ? AND locked_at < ? AND NOT EXISTS (
+		    SELECT 1 FROM TF_bilibili_live_sessions s
+		    WHERE s.task_id = TF_sign_tasks.id AND s.status IN ('discovering','running')
+		      AND s.expires_at > ? AND s.updated_at >= ?
+		  ))
+		)
+		ORDER BY locked_at LIMIT ?`, QueueBilibiliLive, cutoff, QueueBilibiliLive, liveCutoff, liveNow, liveRecent, limit); err != nil {
 		return 0
 	}
 	recovered := 0
 	for i := range rows {
 		task := &rows[i]
-		continuous := task.PluginCode == "tieba" && task.LastErrorCode != nil && *task.LastErrorCode == "UPSTREAM_REQUEST_FAILED"
+		continuous := task.PluginCode == "tieba" && task.LastErrorCode != nil &&
+			*task.LastErrorCode == "UPSTREAM_REQUEST_FAILED" && task.Attempts < MaxTiebaAttempts
 		ordinary := task.PluginCode != "tieba" && task.Attempts < task.MaxAttempts
 		failed := !continuous && !ordinary
 		now := database.Now()
@@ -944,7 +976,7 @@ func (s *TaskService) saveRecord(task *model.SignTask, runID int64, rec sign.Rec
 			reward_json=excluded.reward_json, metrics_json=excluded.metrics_json, finished_at=excluded.finished_at`,
 		task.ID, runID, task.UserID, task.AccountID, task.PluginCode, rec.Key, sequence, rec.Action,
 		nullableString(rec.TargetType), nullableString(rec.TargetID), nullableString(rec.TargetName),
-		status, nullableString(rec.Code), nullableString(truncate(rec.Message, 500)),
+		status, nullableString(rec.Code), nullableString(RedactString(truncate(rec.Message, 500))),
 		jsonOrNil(rec.Rewards), jsonOrNil(rec.Metrics), now, now, now)
 	if err != nil {
 		s.logger.Warn("save record failed", slog.String("error", err.Error()), slog.String("key", rec.Key))
@@ -1037,8 +1069,8 @@ func extendedAttemptLimit(attempts, current int) int {
 	if next < current {
 		next = current
 	}
-	if next > 65535 {
-		next = 65535
+	if next > MaxTiebaAttempts {
+		next = MaxTiebaAttempts
 	}
 	return next
 }
