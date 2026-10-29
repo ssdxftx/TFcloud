@@ -111,10 +111,10 @@
 
 ```
 ┌────────────────────── 单进程 tfcloud ──────────────────────┐
-│  chi router（96 条路由：92 条 API + 健康检查等，分组对齐原版）│
+│  chi router（90 条路由：API、健康检查与前端兜底）          │
 │    ├ RequestID / Recover / CORS / InstallGuard             │
 │    ├ AuthRequired / AdminRequired / RateLimit              │
-│    └ handler → service（认证·账号·任务·邮件·后台·助手·直播） │
+│    └ handler → service（认证·账号·任务·邮件·后台·直播）    │
 │                                                            │
 │  Worker 池（goroutine）                                     │
 │    ├ scheduler      30s 扫描到期账号，按日建任务             │
@@ -385,17 +385,6 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_read_timeout 300s;
     }
-
-    # 智能助手是 NDJSON 流式返回，必须关闭缓冲
-    location /api/assistant/ {
-        proxy_pass http://127.0.0.1:8787;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_buffering off;
-        proxy_cache off;
-        proxy_read_timeout 300s;
-    }
 }
 ```
 
@@ -404,9 +393,7 @@ server {
 ```caddyfile
 sign.example.com {
     encode zstd gzip
-    reverse_proxy 127.0.0.1:8787 {
-        flush_interval -1      # 流式响应
-    }
+    reverse_proxy 127.0.0.1:8787
 }
 ```
 
@@ -614,7 +601,7 @@ data/
 | 签到任务 | 全站任务检索、查看 run 与记录、**完整重跑**（新建任务，保留历史）、取消 |
 | 审计日志 | 谁在什么时候做了什么（设置变更、用户操作、邮件群发等） |
 | 邮件 | 概览、任务列表、投递记录、失败重试、自拟正文群发、测试发信 |
-| 站点设置 | 站点信息、注册开关、人机验证、QQ 登录、SMTP、智能助手 |
+| 站点设置 | 站点信息、注册开关、人机验证、QQ 登录、SMTP |
 | 插件 | 7 个插件的版本、状态、凭据规则、支持的动作 |
 | 版本 | 与上游 VERSION 比对（只提示，不自动更新） |
 
@@ -660,9 +647,8 @@ data/
 |---|---|
 | `site` | `name` `title` `description` `base_url` `logo_url` `home_background_url` `home_background_type` `contact_email` `icp_number` `announcement` `home_announcement` `dashboard_announcement` `maintenance_mode` `registration_enabled` `login_challenge_enabled` `registration_challenge_enabled` `registration_email_verification` `qq_*` |
 | `mail` | 见 [第九章](#九邮件与通知) |
-| `astrbot` | `enabled` `base_url` `api_key` `config_id` `bot_name` `welcome_message` `request_timeout_seconds` `max_message_length` `hourly_message_limit` |
 
-> 密钥型字段（`qq_app_key`、`smtp_password`、`api_key` 等）读出时永远为空，只返回 `<key>_configured`；
+> 密钥型字段（`qq_app_key`、`smtp_password` 等）读出时永远为空，只返回 `<key>_configured`；
 > 提交空字符串表示「不修改」。
 
 ---
@@ -794,7 +780,6 @@ DELETE FROM TF_sign_tasks WHERE created_at < date('now','-90 day');
 | `QQ_LOGIN_UNAVAILABLE` / `QQ_RELAY_UNAVAILABLE` | QQ 登录中转未移植 |
 | `PLATFORM_AUTH_METHOD_UNAVAILABLE` | 该平台暂未开放扫码 / 短信接入 |
 | `MAIL_DISABLED` | 邮件服务未启用 |
-| `ASSISTANT_DISABLED` | 智能助手未启用或未配置 |
 
 ---
 
@@ -819,12 +804,12 @@ DELETE FROM TF_sign_tasks WHERE created_at < date('now','-90 day');
 cmd/tfcloud/            入口（serve / migrate / admin / doctor / version）
 internal/
 ├── config/             .env 加载与结构体
-├── database/           连接池、schema.sql（22 表）、迁移、Maps 查询
+├── database/           连接池、schema.sql（20 表）、迁移、Maps 查询
 ├── secure/             XChaCha20-Poly1305、argon2id、bcrypt 兼容、指纹
 ├── model/              表结构体
 ├── sign/               插件契约、注册表、HTTP 客户端、心跳签名
 ├── plugins/            7 个平台插件（每个一个文件）
-├── service/            业务服务（认证 / 账号 / 任务 / 邮件 / 后台 / 助手 / 直播）
+├── service/            业务服务（认证 / 账号 / 任务 / 邮件 / 后台 / 直播）
 ├── httpapi/            路由、中间件、handler
 ├── worker/             常驻任务池
 └── webui/              go:embed 前端 + SPA 处理器

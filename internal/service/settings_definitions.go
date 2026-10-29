@@ -49,15 +49,4 @@ var settingDefinitions = map[string][]Field{
 		{Name: "batch_limit", Type: "int", Default: 100, Min: 1, Max: 1000},
 		{Name: "daily_summary_hour", Type: "int", Default: 23, Min: 0, Max: 23},
 	},
-	"astrbot": {
-		{Name: "enabled", Type: "bool", Default: false},
-		{Name: "base_url", Type: "url_optional", Default: ""},
-		{Name: "api_key", Type: "string", Default: "", Secret: true},
-		{Name: "config_id", Type: "string", Default: "", Max: 128},
-		{Name: "bot_name", Type: "string", Default: "天方助手", Max: 80},
-		{Name: "welcome_message", Type: "string", Default: "你好，我是天方助手。有什么可以帮你？", Max: 500},
-		{Name: "request_timeout_seconds", Type: "int", Default: 90, Min: 10, Max: 180},
-		{Name: "max_message_length", Type: "int", Default: 4000, Min: 100, Max: 10000},
-		{Name: "hourly_message_limit", Type: "int", Default: 30, Min: 1, Max: 1000},
-	},
 }

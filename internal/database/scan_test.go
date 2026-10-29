@@ -22,8 +22,8 @@ func TestMigrateAndMaps(t *testing.T) {
 	if err := store.Read.Get(&tables, `SELECT COUNT(1) FROM sqlite_master WHERE type='table' AND name LIKE 'TF_%'`); err != nil {
 		t.Fatal(err)
 	}
-	if tables < 21 {
-		t.Fatalf("应创建至少 21 张 TF_ 表，实际 %d", tables)
+	if tables < 20 {
+		t.Fatalf("应创建至少 20 张 TF_ 表，实际 %d", tables)
 	}
 
 	var plugins int

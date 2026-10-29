@@ -8,18 +8,16 @@ import { Tab, Tabs } from "@heroui/tabs";
 import { useEffect, useState } from "react";
 import { toast } from "react-hot-toast";
 import {
-  LuBot,
   LuGlobe,
   LuLogIn,
   LuMegaphone,
   LuSave,
   LuSettings2,
   LuShieldCheck,
-  LuTestTube,
 } from "react-icons/lu";
 
 import { apiRequest } from "@/api/client";
-import type { AstrBotSettings, SiteSettings } from "@/types/sign";
+import type { SiteSettings } from "@/types/sign";
 import { errorMessage } from "@/utils/sign";
 
 const defaults: SiteSettings = {
@@ -83,38 +81,16 @@ function normalizeSiteSettings(site: SiteSettings): SiteSettings {
   };
 }
 
-const astrbotDefaults: AstrBotSettings = {
-  enabled: false,
-  base_url: "",
-  api_key: "",
-  api_key_configured: false,
-  config_id: "",
-  bot_name: "天方助手",
-  welcome_message: "你好，我是天方助手。有什么可以帮你？",
-  request_timeout_seconds: 90,
-  max_message_length: 4000,
-  hourly_message_limit: 30,
-};
-
 export default function AdminSettingsPage() {
   const [form, setForm] = useState<SiteSettings>(defaults);
-  const [astrbotForm, setAstrbotForm] = useState<AstrBotSettings>(astrbotDefaults);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [savingAstrbot, setSavingAstrbot] = useState(false);
-  const [testingAstrbot, setTestingAstrbot] = useState(false);
   const [applyingQqRelay, setApplyingQqRelay] = useState(false);
   const [verifyingQqRelay, setVerifyingQqRelay] = useState(false);
   const [savingCustomQqRelay, setSavingCustomQqRelay] = useState(false);
   useEffect(() => {
-    Promise.all([
-      apiRequest<SiteSettings>({ url: "/admin/settings/site" }),
-      apiRequest<AstrBotSettings>({ url: "/admin/settings/astrbot" }),
-    ])
-      .then(([site, astrbot]) => {
-        setForm(normalizeSiteSettings(site));
-        setAstrbotForm(astrbot);
-      })
+    apiRequest<SiteSettings>({ url: "/admin/settings/site" })
+      .then((site) => setForm(normalizeSiteSettings(site)))
       .catch((error) => toast.error(errorMessage(error)))
       .finally(() => setLoading(false));
 
@@ -123,10 +99,6 @@ export default function AdminSettingsPage() {
     key: K,
     value: SiteSettings[K],
   ) => setForm((current) => ({ ...current, [key]: value }));
-  const astrbotField = <K extends keyof AstrBotSettings>(
-    key: K,
-    value: AstrBotSettings[K],
-  ) => setAstrbotForm((current) => ({ ...current, [key]: value }));
   const save = async () => {
     setSaving(true);
     try {
@@ -154,38 +126,6 @@ export default function AdminSettingsPage() {
       toast.error(errorMessage(error));
     } finally {
       setSaving(false);
-    }
-  };
-  const saveAstrbot = async () => {
-    setSavingAstrbot(true);
-    try {
-      setAstrbotForm(
-        await apiRequest<AstrBotSettings>({
-          method: "PATCH",
-          url: "/admin/settings/astrbot",
-          data: astrbotForm,
-        }),
-      );
-      toast.success("AstrBot 配置已保存");
-    } catch (error) {
-      toast.error(errorMessage(error));
-    } finally {
-      setSavingAstrbot(false);
-    }
-  };
-  const testAstrbot = async () => {
-    setTestingAstrbot(true);
-    try {
-      await apiRequest<{ connected: boolean }>({
-        method: "POST",
-        url: "/admin/astrbot/test",
-        timeout: 35000,
-      });
-      toast.success("AstrBot 连接正常");
-    } catch (error) {
-      toast.error(errorMessage(error));
-    } finally {
-      setTestingAstrbot(false);
     }
   };
   const reloadSite = async () => {
@@ -510,37 +450,6 @@ export default function AdminSettingsPage() {
                 onValueChange={(value) => field("qq_callback_url", value)}
               />
               <div className="flex justify-end">{saveSiteButton("保存 QQ 登录设置")}</div>
-            </CardBody>
-          </Card>
-        </Tab>
-
-        <Tab key="astrbot" title={<span className="flex items-center gap-2"><LuBot />智能助手</span>}>
-          <Card className="tf-glass-card max-w-5xl rounded-[26px]">
-            <CardHeader className="gap-3 px-6 pt-6">
-              <div className="grid h-11 w-11 place-items-center rounded-2xl bg-gradient-to-br from-primary/15 to-secondary/15 text-xl text-primary"><LuBot /></div>
-              <div><h3 className="font-semibold">AstrBot 智能助手</h3><p className="text-xs text-default-500">为站内用户提供独立、连续的 AI 对话</p></div>
-            </CardHeader>
-            <CardBody className="gap-4 px-6 pb-6">
-              <div className="flex items-center justify-between gap-3 rounded-2xl bg-default-100/70 px-4 py-3">
-                <div><p className="text-sm font-medium">开放智能助手</p><p className="text-xs text-default-400">开启后用户侧显示智能助手入口</p></div>
-                <Switch isSelected={astrbotForm.enabled} onValueChange={(value) => astrbotField("enabled", value)} />
-              </div>
-              <div className="grid gap-4 sm:grid-cols-2">
-                <Input label="AstrBot 服务地址" type="url" description="填写 AstrBot WebUI 根地址" placeholder="http://127.0.0.1:6185" value={astrbotForm.base_url} onValueChange={(value) => astrbotField("base_url", value)} />
-                <Input label="API Key" type="password" description="只需授予 chat 权限" placeholder={astrbotForm.api_key_configured ? "已配置，留空则不修改" : "abk_xxx"} value={astrbotForm.api_key} onValueChange={(value) => astrbotField("api_key", value)} />
-                <Input label="助手名称" value={astrbotForm.bot_name} onValueChange={(value) => astrbotField("bot_name", value)} />
-                <Input label="配置文件 ID（可选）" value={astrbotForm.config_id} onValueChange={(value) => astrbotField("config_id", value)} />
-              </div>
-              <Textarea label="欢迎语" minRows={3} value={astrbotForm.welcome_message} onValueChange={(value) => astrbotField("welcome_message", value)} />
-              <div className="grid gap-4 sm:grid-cols-3">
-                <Input label="请求超时（秒）" type="number" min="10" max="180" value={String(astrbotForm.request_timeout_seconds)} onValueChange={(value) => astrbotField("request_timeout_seconds", Number(value || 90))} />
-                <Input label="单条字符上限" type="number" min="100" max="10000" value={String(astrbotForm.max_message_length)} onValueChange={(value) => astrbotField("max_message_length", Number(value || 4000))} />
-                <Input label="每用户每小时次数" type="number" min="1" max="1000" value={String(astrbotForm.hourly_message_limit)} onValueChange={(value) => astrbotField("hourly_message_limit", Number(value || 30))} />
-              </div>
-              <div className="flex flex-wrap justify-end gap-2">
-                <Button variant="flat" startContent={<LuTestTube />} isLoading={testingAstrbot} onPress={() => void testAstrbot()}>测试连接</Button>
-                <Button color="primary" className="tf-soft-button" startContent={<LuSave />} isLoading={savingAstrbot} onPress={() => void saveAstrbot()}>保存 AstrBot 配置</Button>
-              </div>
             </CardBody>
           </Card>
         </Tab>

@@ -753,24 +753,6 @@ func TestRevokeUserSessionsReturnsCount(t *testing.T) {
 	}
 }
 
-func TestAssistantConversationIdempotent(t *testing.T) {
-	store := newTestStore(t)
-	userID := insertTestUser(t, store)
-	svc := &AssistantService{store: store}
-
-	first, err := svc.conversation(userID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := svc.conversation(userID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first["id"] != second["id"] {
-		t.Fatalf("同一用户应复用会话: %v vs %v", first["id"], second["id"])
-	}
-}
-
 func insertTestAdmin(t *testing.T, store *database.Store, name string) int64 {
 	t.Helper()
 	now := database.Now()
@@ -822,34 +804,5 @@ func TestPublicSiteReportsMailEnabled(t *testing.T) {
 	}
 	if today, _ := site["today"].(string); today == "" {
 		t.Fatal("PublicSite 应输出 today")
-	}
-}
-
-func TestAssistantQuotaSurvivesConversationReset(t *testing.T) {
-	store := newTestStore(t)
-	userID := insertTestUser(t, store)
-	svc := &AssistantService{store: store}
-
-	for i := 0; i < 2; i++ {
-		allowed, err := svc.consumeMessageQuota(userID, 2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !allowed {
-			t.Fatalf("第 %d 条消息不应被限流", i+1)
-		}
-	}
-	if allowed, _ := svc.consumeMessageQuota(userID, 2); allowed {
-		t.Fatal("超过小时上限后应拒绝")
-	}
-
-	if _, err := svc.conversation(userID); err != nil {
-		t.Fatal(err)
-	}
-	if err := svc.Reset(userID); err != nil {
-		t.Fatal(err)
-	}
-	if allowed, _ := svc.consumeMessageQuota(userID, 2); allowed {
-		t.Fatal("清空会话历史不应绕过小时限流")
 	}
 }

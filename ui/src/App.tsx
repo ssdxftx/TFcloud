@@ -23,7 +23,6 @@ const TasksPage = lazy(() => import('@/pages/sign/tasks'));
 const TaskDetailPage = lazy(() => import('@/pages/sign/task_detail'));
 const PluginsPage = lazy(() => import('@/pages/sign/plugins'));
 const ProfilePage = lazy(() => import('@/pages/sign/profile'));
-const AssistantPage = lazy(() => import('@/pages/sign/assistant'));
 const AdminLayoutPage = lazy(() => import('@/pages/sign/admin/layout'));
 const AdminOverviewPage = lazy(() => import('@/pages/sign/admin/overview'));
 const AdminUsersPage = lazy(() => import('@/pages/sign/admin/users'));
@@ -133,7 +132,6 @@ export default function App () {
                 <Route path='tasks/:taskNo' element={<TaskDetailPage />} />
                 <Route path='plugins' element={<Navigate to='/TFYT/accounts' replace />} />
                 <Route path='profile' element={<ProfilePage />} />
-                <Route path='assistant' element={<AssistantPage />} />
                 <Route path='qq_login' element={<Navigate to='/TFYT/accounts' replace />} />
                 <Route element={<AdminRoute />}>
                   <Route path='admin' element={<AdminLayoutPage />}>
@@ -158,7 +156,6 @@ export default function App () {
             <Route path='/tasks/*' element={<LegacyConsoleRedirect />} />
             <Route path='/plugins' element={<LegacyConsoleRedirect />} />
             <Route path='/profile' element={<LegacyConsoleRedirect />} />
-            <Route path='/assistant' element={<LegacyConsoleRedirect />} />
             <Route path='/qq_login' element={<LegacyConsoleRedirect />} />
             <Route path='/admin/*' element={<LegacyConsoleRedirect />} />
             <Route path='*' element={<NotFoundPage />} />

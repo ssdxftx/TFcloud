@@ -346,41 +346,6 @@ CREATE TABLE IF NOT EXISTS TF_settings (
   updated_at    TEXT    NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS TF_astrbot_conversations (
-  id                INTEGER PRIMARY KEY AUTOINCREMENT,
-  conversation_no   TEXT    NOT NULL,
-  user_id           INTEGER NOT NULL REFERENCES TF_users(id) ON DELETE CASCADE,
-  astrbot_session_id TEXT   NOT NULL,
-  last_message_at   TEXT,
-  created_at        TEXT    NOT NULL,
-  updated_at        TEXT    NOT NULL
-);
-CREATE UNIQUE INDEX IF NOT EXISTS uniq_astrbot_conv_no ON TF_astrbot_conversations(conversation_no);
-CREATE UNIQUE INDEX IF NOT EXISTS uniq_astrbot_conv_user ON TF_astrbot_conversations(user_id);
-CREATE UNIQUE INDEX IF NOT EXISTS uniq_astrbot_session ON TF_astrbot_conversations(astrbot_session_id);
-
-CREATE TABLE IF NOT EXISTS TF_astrbot_messages (
-  id              INTEGER PRIMARY KEY AUTOINCREMENT,
-  conversation_id INTEGER NOT NULL REFERENCES TF_astrbot_conversations(id) ON DELETE CASCADE,
-  user_id         INTEGER NOT NULL REFERENCES TF_users(id) ON DELETE CASCADE,
-  role            TEXT    NOT NULL,
-  content         TEXT    NOT NULL,
-  status          TEXT    NOT NULL DEFAULT 'completed',
-  error_code      TEXT,
-  error_message   TEXT,
-  created_at      TEXT    NOT NULL,
-  updated_at      TEXT    NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_astrbot_msg_conv ON TF_astrbot_messages(conversation_id, id);
-CREATE INDEX IF NOT EXISTS idx_astrbot_msg_user ON TF_astrbot_messages(user_id, created_at, role);
-
-CREATE TABLE IF NOT EXISTS TF_astrbot_rate_limits (
-  user_id      INTEGER NOT NULL,
-  window_start TEXT    NOT NULL,
-  used         INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (user_id, window_start)
-);
-
 CREATE TABLE IF NOT EXISTS TF_audit_logs (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   request_id    TEXT,

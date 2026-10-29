@@ -18,20 +18,19 @@ import (
 )
 
 type Server struct {
-	Cfg       *config.Config
-	Store     *database.Store
-	Auth      *service.AuthService
-	Settings  *service.SettingsService
-	Install   *service.InstallService
-	Accounts  *service.AccountService
-	Tasks     *service.TaskService
-	Admin     *service.AdminService
-	Mail      *service.MailService
-	Assistant *service.AssistantService
-	Platform  *service.PlatformService
-	Audit     *service.AuditService
-	Registry  *sign.Registry
-	Logger    *slog.Logger
+	Cfg      *config.Config
+	Store    *database.Store
+	Auth     *service.AuthService
+	Settings *service.SettingsService
+	Install  *service.InstallService
+	Accounts *service.AccountService
+	Tasks    *service.TaskService
+	Admin    *service.AdminService
+	Mail     *service.MailService
+	Platform *service.PlatformService
+	Audit    *service.AuditService
+	Registry *sign.Registry
+	Logger   *slog.Logger
 }
 
 // body 解析 JSON 请求体，空体返回空 map。

@@ -537,9 +537,8 @@ func (s *AdminService) Plugins() []map[string]any {
 
 func (s *AdminService) Settings() map[string]any {
 	return map[string]any{
-		"site":    s.settings.Group("site"),
-		"mail":    s.settings.Group("mail"),
-		"astrbot": s.settings.Group("astrbot"),
+		"site": s.settings.Group("site"),
+		"mail": s.settings.Group("mail"),
 	}
 }
 

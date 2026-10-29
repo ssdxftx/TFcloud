@@ -75,21 +75,20 @@ func logger() *slog.Logger {
 }
 
 type app struct {
-	cfg       *config.Config
-	store     *database.Store
-	logger    *slog.Logger
-	registry  *sign.Registry
-	settings  *service.SettingsService
-	auth      *service.AuthService
-	mail      *service.MailService
-	accounts  *service.AccountService
-	tasks     *service.TaskService
-	audit     *service.AuditService
-	install   *service.InstallService
-	platform  *service.PlatformService
-	admin     *service.AdminService
-	assistant *service.AssistantService
-	live      *service.LiveService
+	cfg      *config.Config
+	store    *database.Store
+	logger   *slog.Logger
+	registry *sign.Registry
+	settings *service.SettingsService
+	auth     *service.AuthService
+	mail     *service.MailService
+	accounts *service.AccountService
+	tasks    *service.TaskService
+	audit    *service.AuditService
+	install  *service.InstallService
+	platform *service.PlatformService
+	admin    *service.AdminService
+	live     *service.LiveService
 }
 
 func bootstrap() (*app, error) {
@@ -130,12 +129,11 @@ func bootstrap() (*app, error) {
 	install := service.NewInstall(store, cfg, settings)
 	platform := service.NewPlatform(registry)
 	admin := service.NewAdmin(store, cfg, settings, accounts, tasks, audit, registry, platform, mail)
-	assistant := service.NewAssistant(store, cfg, settings)
 	live := service.NewLive(store, accounts, tasks, log)
 
 	return &app{cfg: cfg, store: store, logger: log, registry: registry, settings: settings,
 		auth: auth, mail: mail, accounts: accounts, tasks: tasks, audit: audit,
-		install: install, platform: platform, admin: admin, assistant: assistant, live: live}, nil
+		install: install, platform: platform, admin: admin, live: live}, nil
 }
 
 func runServe() {
@@ -149,7 +147,7 @@ func runServe() {
 	server := &httpapi.Server{
 		Cfg: a.cfg, Store: a.store, Auth: a.auth, Settings: a.settings, Install: a.install,
 		Accounts: a.accounts, Tasks: a.tasks, Admin: a.admin, Mail: a.mail,
-		Assistant: a.assistant, Platform: a.platform, Audit: a.audit,
+		Platform: a.platform, Audit: a.audit,
 		Registry: a.registry, Logger: a.logger,
 	}
 

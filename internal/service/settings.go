@@ -175,7 +175,6 @@ func (s *SettingsService) Update(group string, input map[string]any, userID int6
 // PublicSite 返回给前端 /api/site 的裁剪结果。
 func (s *SettingsService) PublicSite() map[string]any {
 	site := s.Group("site")
-	astrbot := s.Group("astrbot")
 	mailGroup := s.Group("mail")
 
 	legacy := strings.TrimSpace(str(site["announcement"]))
@@ -229,9 +228,6 @@ func (s *SettingsService) PublicSite() map[string]any {
 	}
 	site["qq_login_enabled"] = truthy(site["qq_login_enabled"]) &&
 		strings.TrimSpace(str(site["qq_callback_url"])) != "" && providerReady
-	site["assistant_enabled"] = truthy(astrbot["enabled"]) &&
-		strings.TrimSpace(str(astrbot["base_url"])) != "" && truthy(astrbot["api_key_configured"])
-	site["assistant_name"] = firstNonEmpty(strings.TrimSpace(str(astrbot["bot_name"])), "天方助手")
 	site["registration_email_verification"] = truthy(site["registration_email_verification"]) && truthy(mailGroup["enabled"])
 	site["mail_enabled"] = truthy(mailGroup["enabled"])
 	site["timezone_offset"] = time.Now().Format("-07:00")
@@ -246,7 +242,6 @@ func (s *SettingsService) PublicSite() map[string]any {
 		"registration_email_verification", "mail_enabled", "timezone_offset", "today",
 		"qq_login_enabled", "qq_auto_register", "running_since", "running_days",
 		"user_count", "today_signed_accounts", "today_signed_users",
-		"assistant_enabled", "assistant_name",
 	}
 	out := make(map[string]any, len(keys))
 	for _, k := range keys {

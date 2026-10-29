@@ -4,7 +4,6 @@ import { useState } from 'react';
 import {
   LuArrowRight,
   LuBellRing,
-  LuBot,
   LuChartNoAxesCombined,
   LuCircleUserRound,
   LuClock3,
@@ -58,7 +57,6 @@ const newFeatures = [
   { icon: <LuTimer />, title: '定时签到', description: '可为不同账号分别指定每天的执行时间。' },
   { icon: <LuMail />, title: '邮件通知', description: '账号失效主动提醒，每日签到结果可按需接收。' },
   { icon: <LuQrCode />, title: '多种添加方式', description: '根据平台支持扫码、短信、密码或凭证导入。' },
-  { icon: <LuBot />, title: '智能助手', description: '在站内直接咨询账号添加和使用问题。' },
   { icon: <LuChartNoAxesCombined />, title: '任务明细', description: '按平台、状态筛选任务，执行结果逐条可查。' },
   { icon: <LuPackageCheck />, title: '多平台管理', description: '账号按平台分类展示，登录方式随平台匹配。' },
 ];

@@ -30,8 +30,6 @@ const defaultSite: SiteSettings = {
   registration_email_verification: false,
   mail_enabled: false,
   qq_login_enabled: false,
-  assistant_enabled: false,
-  assistant_name: "天方助手",
 };
 const SiteContext = createContext<SiteSettings>(defaultSite);
 

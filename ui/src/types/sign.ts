@@ -229,58 +229,7 @@ export interface SiteSettings {
   qq_relay_installation_id?: string; qq_relay_verification_expires_at?: string;
   running_since?: string; running_days?: number;
   user_count?: number; today_signed_accounts?: number; today_signed_users?: number;
-  assistant_enabled?: boolean; assistant_name?: string;
 }
-
-export interface AstrBotSettings {
-  enabled: boolean;
-  base_url: string;
-  api_key: string;
-  api_key_configured: boolean;
-  config_id: string;
-  bot_name: string;
-  welcome_message: string;
-  request_timeout_seconds: number;
-  max_message_length: number;
-  hourly_message_limit: number;
-}
-
-export interface AstrBotStatus {
-  enabled: boolean;
-  ready: boolean;
-  name: string;
-  welcome_message: string;
-  max_message_length: number;
-}
-
-export interface AstrBotMessage {
-  id: number;
-  role: 'user' | 'assistant';
-  content: string;
-  status: 'pending' | 'completed' | 'failed';
-  error: { code: string; message: string | null } | null;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface AstrBotExchange {
-  user_message: AstrBotMessage;
-  assistant_message: AstrBotMessage;
-}
-
-export type AstrBotStreamEvent =
-  | {
-      event: 'started' | 'done';
-      data: AstrBotExchange;
-    }
-  | {
-      event: 'delta' | 'replace';
-      data: { content: string };
-    }
-  | {
-      event: 'error';
-      data: { code: string; message: string };
-    };
 
 export interface QqLoginStart {
   authorization_url: string;

@@ -142,8 +142,6 @@ func (p *Pool) maintain() {
 	_, _ = p.store.Write.ExecContext(ctx, `DELETE FROM TF_platform_auth_flows WHERE expires_at < ?`,
 		database.Now())
 	_, _ = p.store.Write.ExecContext(ctx, `DELETE FROM TF_sign_record_payloads WHERE expires_at < ?`, database.Now())
-	_, _ = p.store.Write.ExecContext(ctx, `DELETE FROM TF_astrbot_rate_limits WHERE window_start < ?`,
-		database.Ts(time.Now().Add(-2*time.Hour)))
 	if _, err := p.store.Write.ExecContext(ctx, `UPDATE TF_bilibili_live_sessions SET status='expired',
 		finished_at=?, updated_at=? WHERE status IN ('discovering','running') AND expires_at < ?`,
 		database.Now(), database.Now(), database.Now()); err != nil {

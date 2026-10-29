@@ -9,7 +9,6 @@ import {
   LuBookOpenCheck,
   LuCircleUserRound,
   LuClipboardList,
-  LuBot,
   LuLayoutDashboard,
   LuLogOut,
   LuMenu,
@@ -31,14 +30,12 @@ interface NavItem {
   href: string;
   icon: React.ReactNode;
   admin?: boolean;
-  assistant?: boolean;
 }
 
 const navItems: NavItem[] = [
   { label: '控制台', href: '/TFYT', icon: <LuLayoutDashboard /> },
   { label: '平台账号', href: '/TFYT/accounts', icon: <LuCircleUserRound /> },
   { label: '签到任务', href: '/TFYT/tasks', icon: <LuClipboardList /> },
-  { label: '智能助手', href: '/TFYT/assistant', icon: <LuBot />, assistant: true },
   { label: '个人设置', href: '/TFYT/profile', icon: <LuShieldCheck /> },
   { label: '管理后台', href: '/TFYT/admin', icon: <LuBookOpenCheck />, admin: true },
 ];
@@ -47,7 +44,6 @@ const titles: Record<string, string> = {
   '/TFYT': '控制台',
   '/TFYT/accounts': '平台账号',
   '/TFYT/tasks': '签到任务',
-  '/TFYT/assistant': '智能助手',
   '/TFYT/profile': '个人设置',
   '/TFYT/admin': '管理后台',
 };
@@ -60,11 +56,8 @@ export default function SignLayout () {
   const navigate = useNavigate();
   const pageLoading = usePageLoading();
   const visibleNav = useMemo(
-    () => navItems.filter((item) => (
-      (!item.admin || user?.role === 'admin')
-      && (!item.assistant || site.assistant_enabled || user?.role === 'admin')
-    )),
-    [site.assistant_enabled, user?.role]
+    () => navItems.filter((item) => !item.admin || user?.role === 'admin'),
+    [user?.role]
   );
   const currentTitle = location.pathname.startsWith('/TFYT/tasks/')
     ? '任务详情'

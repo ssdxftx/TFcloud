@@ -100,12 +100,6 @@ func (s *Server) Router(static http.Handler) http.Handler {
 			priv.Post("/sign-tasks/{taskNo}/retry", s.tasksRetry)
 			priv.Post("/sign-tasks/{taskNo}/cancel", s.tasksCancel)
 
-			priv.Get("/assistant/status", s.assistantStatus)
-			priv.Get("/assistant/messages", s.assistantMessages)
-			priv.Post("/assistant/messages", s.assistantSend)
-			priv.Post("/assistant/messages/stream", s.assistantStream)
-			priv.Delete("/assistant/messages", s.assistantReset)
-
 			// 管理员
 			priv.Group(func(admin chi.Router) {
 				admin.Use(s.mw().AdminRequired)
@@ -153,8 +147,6 @@ func (s *Server) Router(static http.Handler) http.Handler {
 				admin.Patch("/admin/plugin-accounts/{id:[0-9]+}", s.adminAccountUpdate)
 				admin.Delete("/admin/plugin-accounts/{id:[0-9]+}", s.adminAccountDelete)
 				admin.Post("/admin/plugin-accounts/{id:[0-9]+}/actions/{action}", s.adminAccountAction)
-
-				admin.Post("/admin/astrbot/test", s.adminAssistantTest)
 			})
 		})
 
