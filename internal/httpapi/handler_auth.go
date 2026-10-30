@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -71,7 +72,7 @@ func (s *Server) installRun(w http.ResponseWriter, r *http.Request) {
 		respond.Fail(w, r, err)
 		return
 	}
-	input := service.InstallInput{SiteURL: strOf(payload["site_url"]), SessionSecure: boolOf(payload["session_secure"])}
+	input := service.InstallInput{SiteURL: strOf(payload["site_url"]), SessionSecure: boolOf(payload["session_secure"]), InstallToken: strOf(payload["install_token"])}
 	if admin, ok := payload["admin"].(map[string]any); ok {
 		input.Admin.Username = strOf(admin["username"])
 		input.Admin.Password = strOf(admin["password"])
@@ -113,8 +114,8 @@ func (s *Server) verifyChallenge(w http.ResponseWriter, r *http.Request) {
 		respond.Fail(w, r, err)
 		return
 	}
-	out, err := s.Auth.VerifyChallenge(strOf(payload["challenge_id"]), intOf(payload["elapsed_ms"]),
-		intOf(payload["interaction_count"]), middleware.ClientIP(r), r.UserAgent())
+	out, err := s.Auth.VerifyChallenge(strOf(payload["challenge_id"]), strOf(payload["answer"]),
+		middleware.ClientIP(r), r.UserAgent())
 	if err != nil {
 		respond.Fail(w, r, err)
 		return
@@ -144,7 +145,8 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		respond.Fail(w, r, err)
 		return
 	}
-	s.setSessionCookie(w, strOf(out["access_token"]))
+	s.setSessionCookie(w, r, strOf(out["access_token"]))
+	stripSessionToken(out)
 	respond.Created(w, r, out)
 }
 
@@ -184,7 +186,8 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		respond.Fail(w, r, err)
 		return
 	}
-	s.setSessionCookie(w, strOf(out["access_token"]))
+	s.setSessionCookie(w, r, strOf(out["access_token"]))
+	stripSessionToken(out)
 	respond.OK(w, r, out)
 }
 
@@ -193,6 +196,17 @@ func (s *Server) loginEmailCodeIssue(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		respond.Fail(w, r, err)
 		return
+	}
+	if truthyValue(s.Settings.Group("site")["login_challenge_enabled"]) {
+		id := strOf(payload["challenge_id"])
+		if id == "" {
+			respond.Fail(w, r, respond.NewError("HUMAN_VERIFICATION_REQUIRED", "请先完成人机验证", 422))
+			return
+		}
+		if err := s.Auth.ConsumeChallenge(id, "login", middleware.ClientIP(r), r.UserAgent()); err != nil {
+			respond.Fail(w, r, err)
+			return
+		}
 	}
 	out, err := s.Auth.IssueEmailCode(strOf(payload["email"]), middleware.ClientIP(r), "login")
 	if err != nil {
@@ -214,7 +228,8 @@ func (s *Server) loginWithEmailCode(w http.ResponseWriter, r *http.Request) {
 		respond.Fail(w, r, err)
 		return
 	}
-	s.setSessionCookie(w, strOf(out["access_token"]))
+	s.setSessionCookie(w, r, strOf(out["access_token"]))
+	stripSessionToken(out)
 	respond.OK(w, r, out)
 }
 
@@ -261,7 +276,7 @@ func (s *Server) resetPassword(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	s.Auth.Logout(middleware.TokenFromContext(r.Context()))
-	s.clearSessionCookie(w)
+	s.clearSessionCookie(w, r)
 	respond.Message(w, r, map[string]any{"logout": true}, "已退出登录")
 }
 
@@ -280,11 +295,12 @@ func (s *Server) updateMe(w http.ResponseWriter, r *http.Request) {
 		respond.Fail(w, r, err)
 		return
 	}
-	out, err := s.Auth.UpdateProfile(userID(r), payload)
+	out, err := s.Auth.UpdateProfile(userID(r), payload, middleware.TokenFromContext(r.Context()))
 	if err != nil {
 		respond.Fail(w, r, err)
 		return
 	}
+	s.Audit.Record(userID(r), "user.profile.update", "user", strOf(userID(r)), nil, respond.RequestID(r.Context()))
 	respond.Message(w, r, out, "资料已更新")
 }
 
@@ -316,7 +332,8 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 		respond.Fail(w, r, err)
 		return
 	}
-	s.clearSessionCookie(w)
+	s.Audit.Record(userID(r), "user.password.change", "user", strOf(userID(r)), nil, respond.RequestID(r.Context()))
+	s.clearSessionCookie(w, r)
 	respond.Message(w, r, map[string]any{"changed": true}, "密码已修改，请重新登录")
 }
 
@@ -376,7 +393,14 @@ func (s *Server) sessionMaxAge() int {
 	return int(ttl / time.Second)
 }
 
-func (s *Server) setSessionCookie(w http.ResponseWriter, token string) {
+func (s *Server) cookieSecure(r *http.Request) bool {
+	if s.Cfg.SessionSecureEnabled() || r.TLS != nil {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https")
+}
+
+func (s *Server) setSessionCookie(w http.ResponseWriter, r *http.Request, token string) {
 	if token == "" {
 		return
 	}
@@ -385,19 +409,19 @@ func (s *Server) setSessionCookie(w http.ResponseWriter, token string) {
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   s.Cfg.SessionSecureEnabled(),
+		Secure:   s.cookieSecure(r),
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   s.sessionMaxAge(),
 	})
 }
 
-func (s *Server) clearSessionCookie(w http.ResponseWriter) {
+func (s *Server) clearSessionCookie(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     middleware.SessionCookie,
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   s.Cfg.SessionSecureEnabled(),
+		Secure:   s.cookieSecure(r),
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})
@@ -405,11 +429,27 @@ func (s *Server) clearSessionCookie(w http.ResponseWriter) {
 
 // ---------- 小工具 ----------
 
+func stripSessionToken(out map[string]any) {
+	delete(out, "access_token")
+	delete(out, "token_type")
+}
+
 func strOf(v any) string {
-	if s, ok := v.(string); ok {
-		return s
+	switch t := v.(type) {
+	case string:
+		return t
+	case int:
+		return strconv.Itoa(t)
+	case int64:
+		return strconv.FormatInt(t, 10)
+	case float64:
+		if t == float64(int64(t)) {
+			return strconv.FormatInt(int64(t), 10)
+		}
+		return strconv.FormatFloat(t, 'f', -1, 64)
+	default:
+		return ""
 	}
-	return ""
 }
 
 func boolOf(v any) bool {

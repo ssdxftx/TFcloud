@@ -43,6 +43,8 @@ func timeNowISO() string { return time.Now().Format(time.RFC3339) }
 
 func dateToday() string { return time.Now().Format("2006-01-02") }
 
+func dateTodayCST() string { return time.Now().In(time.FixedZone("CST", 8*3600)).Format("2006-01-02") }
+
 func randHex(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)
@@ -108,22 +110,6 @@ func rsaEncryptHex(publicKeyB64, value string) (string, error) {
 		return "", fmt.Errorf("加密失败: %w", err)
 	}
 	return hex.EncodeToString(enc), nil
-}
-
-func pemPublicKey(b64 string) string {
-	var b strings.Builder
-	b.WriteString("-----BEGIN PUBLIC KEY-----\n")
-	clean := strings.Join(strings.Fields(b64), "")
-	for i := 0; i < len(clean); i += 64 {
-		end := i + 64
-		if end > len(clean) {
-			end = len(clean)
-		}
-		b.WriteString(clean[i:end])
-		b.WriteString("\n")
-	}
-	b.WriteString("-----END PUBLIC KEY-----\n")
-	return b.String()
 }
 
 var _ = pem.Decode

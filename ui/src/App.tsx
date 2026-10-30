@@ -2,7 +2,6 @@ import { Spinner } from '@heroui/spinner';
 import { lazy, Suspense, useEffect } from 'react';
 import { Link, Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom';
 
-import { AUTH_TOKEN_KEY } from '@/api/client';
 import { ConfirmCardHost } from '@/components/confirm_card';
 import PageBackground from '@/components/page_background';
 import PageLoadingBar from '@/components/page_loading_bar';
@@ -61,10 +60,7 @@ function usePrefetchRoutes () {
 function ProtectedRoute () {
   const { loading, isAuthenticated } = useSignAuth();
   const location = useLocation();
-  // 本地已有 token 时先放行渲染，让页面的数据请求与 /me 并行，
-  // 避免在慢链路上串行等待两个往返（首屏能快接近一半）。
-  const hasToken = Boolean(localStorage.getItem(AUTH_TOKEN_KEY));
-  if (loading && !hasToken) return <LoadingScreen />;
+  if (loading) return <LoadingScreen />;
   if (!loading && !isAuthenticated) return <Navigate to='/login' replace state={{ from: location.pathname }} />;
   return <Outlet />;
 }

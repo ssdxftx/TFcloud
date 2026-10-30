@@ -100,7 +100,7 @@ func pushResultError(channel string, raw []byte) error {
 	case "bark":
 		if codeValue, ok := body["code"]; ok {
 			if n := code("code"); n != 0 && n != 200 {
-				return fmt.Errorf("Bark 推送失败: %v", codeValue)
+				return fmt.Errorf("bark 推送失败: %v", codeValue)
 			}
 		}
 	}
@@ -124,7 +124,7 @@ func barkEndpoint(token, title, body string) (string, error) {
 		parsed, err := url.Parse(token)
 		if err != nil || parsed.Scheme != "https" || parsed.Host != "api.day.app" ||
 			parsed.RawQuery != "" || parsed.Fragment != "" {
-			return "", fmt.Errorf("Bark 完整地址必须使用 https://api.day.app/")
+			return "", fmt.Errorf("bark 完整地址必须使用 https://api.day.app/")
 		}
 		base := strings.TrimRight(parsed.String(), "/")
 		return base + "/" + url.PathEscape(title) + "/" + url.PathEscape(body), nil

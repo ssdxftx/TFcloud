@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 
-import { AUTH_EXPIRED_EVENT, AUTH_TOKEN_KEY, ApiError, apiRequest } from '@/api/client';
+import { AUTH_EXPIRED_EVENT, ApiError, apiRequest } from '@/api/client';
 import type { LoginResult, QqExchangeResult, User } from '@/types/sign';
 
 interface AuthContextValue {
@@ -23,18 +23,12 @@ export function AuthProvider ({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   const refreshUser = useCallback(async () => {
-    if (!localStorage.getItem(AUTH_TOKEN_KEY)) {
-      setUser(null);
-      setLoading(false);
-      return null;
-    }
     try {
       const current = await apiRequest<User>({ url: '/me' });
       setUser(current);
       return current;
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
-        localStorage.removeItem(AUTH_TOKEN_KEY);
         setUser(null);
       }
       return null;
@@ -59,7 +53,6 @@ export function AuthProvider ({ children }: { children: React.ReactNode }) {
       url: '/auth/login',
       data: { username, password, challenge_id: challengeId || '' },
     });
-    localStorage.setItem(AUTH_TOKEN_KEY, result.access_token);
     setUser(result.user);
     return result.user;
   }, []);
@@ -70,7 +63,6 @@ export function AuthProvider ({ children }: { children: React.ReactNode }) {
       url: '/auth/login/email',
       data: { email, code: emailCode },
     });
-    localStorage.setItem(AUTH_TOKEN_KEY, result.access_token);
     setUser(result.user);
     return result.user;
   }, []);
@@ -81,7 +73,6 @@ export function AuthProvider ({ children }: { children: React.ReactNode }) {
       url: '/auth/qq/register',
       data: { onboarding_token: onboardingToken, username, email, email_code: emailCode || '' },
     });
-    localStorage.setItem(AUTH_TOKEN_KEY, result.access_token);
     setUser(result.user);
     return result.user;
   }, []);
@@ -92,7 +83,6 @@ export function AuthProvider ({ children }: { children: React.ReactNode }) {
       url: '/auth/register',
       data: { username, email, password, challenge_id: challengeId || '', email_code: emailCode || '' },
     });
-    localStorage.setItem(AUTH_TOKEN_KEY, result.access_token);
     setUser(result.user);
     return result.user;
   }, []);
@@ -101,7 +91,6 @@ export function AuthProvider ({ children }: { children: React.ReactNode }) {
     try {
       await apiRequest<null>({ method: 'POST', url: '/auth/logout' });
     } finally {
-      localStorage.removeItem(AUTH_TOKEN_KEY);
       setUser(null);
     }
   }, []);
@@ -112,8 +101,7 @@ export function AuthProvider ({ children }: { children: React.ReactNode }) {
       url: '/auth/qq/exchange',
       data: { exchange_code: exchangeCode },
     });
-    if ('access_token' in result) {
-      localStorage.setItem(AUTH_TOKEN_KEY, result.access_token);
+    if ('user' in result) {
       setUser(result.user);
     }
     return result;

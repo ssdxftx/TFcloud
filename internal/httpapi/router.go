@@ -20,6 +20,7 @@ func (s *Server) Router(static http.Handler) http.Handler {
 	r.Use(middleware.SecurityHeaders)
 	r.Use(s.mw().Recover)
 	r.Use(s.mw().CORSHandler)
+	r.Use(middleware.CSRF)
 	r.Use(s.mw().InstallGuard)
 	r.Use(s.mw().MaintenanceGuard)
 	r.Use(chimw.Timeout(180 * time.Second))
@@ -30,11 +31,11 @@ func (s *Server) Router(static http.Handler) http.Handler {
 	r.Get("/.well-known/qq-login-verification.txt", s.qqVerification)
 
 	r.Route("/api", func(api chi.Router) {
-		limiter := middleware.NewRateLimiter(30, time.Minute)
-		sensitive := middleware.NewRateLimiter(10, time.Minute)
+		limiter := middleware.NewRateLimiter(s.Store, 30, time.Minute)
+		sensitive := middleware.NewRateLimiter(s.Store, 10, time.Minute)
 
 		// 安装向导
-		installLimiter := middleware.NewRateLimiter(10, time.Minute)
+		installLimiter := middleware.NewRateLimiter(s.Store, 10, time.Minute)
 		api.Get("/install/status", s.installStatus)
 		api.With(installLimiter.Limit("install")).Get("/install/checks", s.installChecks)
 		api.With(installLimiter.Limit("install")).Post("/install/test-database", s.installTestStorage)

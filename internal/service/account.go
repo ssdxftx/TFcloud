@@ -38,9 +38,9 @@ func (s *AccountService) List(userID int64) ([]map[string]any, error) {
 		model.PluginAccount
 		CredentialID *int64 `db:"credential_id"`
 	}{}
-	err := s.store.Read.Select(&rows, `SELECT a.*, c.id AS credential_id
+	err := s.store.Read.Select(&rows, `SELECT a.*,
+		(SELECT MIN(c.id) FROM TF_plugin_credentials c WHERE c.account_id = a.id) AS credential_id
 		FROM TF_plugin_accounts a
-		LEFT JOIN TF_plugin_credentials c ON c.account_id = a.id
 		WHERE a.user_id = ? AND a.deleted_at IS NULL
 		ORDER BY a.id DESC`, userID)
 	if err != nil {
@@ -315,7 +315,8 @@ func (s *AccountService) Update(userID, accountID int64, input map[string]any) (
 		normalized := normalizeLegacySettings(effectiveSettings, acc.NextRunAt)
 		nextRunCandidate := nullableString(nextSchedule(normalized, seed))
 		if _, err := tx.Exec(`UPDATE TF_plugin_accounts SET
-			status=CASE WHEN ? THEN status ELSE 'active' END, last_verified_at=?, last_error_code=NULL,
+			status=CASE WHEN ? THEN status WHEN status='credential_expired' THEN 'active' ELSE status END,
+			last_verified_at=?, last_error_code=NULL,
 			last_error_message=NULL, display_name=CASE WHEN display_name='' THEN ? ELSE display_name END,
 			external_user_id=?, profile_json=?,
 			next_run_at=CASE WHEN next_run_at IS NULL OR next_run_at <= ? THEN ? ELSE next_run_at END,
@@ -341,8 +342,12 @@ func (s *AccountService) Delete(userID, accountID int64) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.Exec(`UPDATE TF_sign_tasks SET status='cancelled', finished_at=?, updated_at=?
-		WHERE account_id=? AND status IN ('pending','retrying')`, now, now, accountID); err != nil {
+	var running []int64
+	if s.tasks != nil {
+		_ = tx.Select(&running, `SELECT id FROM TF_sign_tasks WHERE account_id=? AND status='running'`, accountID)
+	}
+	if _, err := tx.Exec(`UPDATE TF_sign_tasks SET status='cancelled', finished_at=?, locked_at=NULL, locked_by=NULL, updated_at=?
+		WHERE account_id=? AND status IN ('pending','retrying','running')`, now, now, accountID); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`UPDATE TF_plugin_accounts SET deleted_at=?, status='disabled', next_run_at=NULL, updated_at=?
@@ -352,7 +357,13 @@ func (s *AccountService) Delete(userID, accountID int64) error {
 	if _, err := tx.Exec(`DELETE FROM TF_plugin_credentials WHERE account_id=?`, accountID); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	for _, id := range running {
+		s.tasks.cancelRun(id)
+	}
+	return nil
 }
 
 // ---------- 凭据 ----------
@@ -407,6 +418,10 @@ func (s *AccountService) DecryptedCredential(acc *model.PluginAccount) (map[stri
 		acc.ID); err != nil {
 		return nil, respond.NewError("PLUGIN_CREDENTIAL_MISSING", "平台凭据缺失，请重新授权", 409)
 	}
+	return s.decryptCredential(acc, &cred)
+}
+
+func (s *AccountService) decryptCredential(acc *model.PluginAccount, cred *model.Credential) (map[string]any, error) {
 	key, err := secure.DecodeKey(s.cfg.SecretKey())
 	if err != nil {
 		return nil, respond.NewError("APP_KEY_MISSING", "应用密钥未配置", 500)
@@ -439,20 +454,24 @@ func (s *AccountService) MergeRuntimeCredentials(accountID int64, patch map[stri
 	if len(filtered) == 0 {
 		return nil
 	}
-	var acc model.PluginAccount
-	if err := s.store.Read.Get(&acc, `SELECT * FROM TF_plugin_accounts WHERE id = ?`, accountID); err != nil {
-		return respond.NotFound("平台账号不存在")
-	}
-	current, err := s.DecryptedCredential(&acc)
-	if err != nil {
-		return err
-	}
-	merged := mergeMaps(current, filtered)
 	tx, err := s.store.Write.Beginx()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	var acc model.PluginAccount
+	if err := tx.Get(&acc, `SELECT * FROM TF_plugin_accounts WHERE id = ? AND deleted_at IS NULL`, accountID); err != nil {
+		return respond.NotFound("平台账号不存在")
+	}
+	var cred model.Credential
+	if err := tx.Get(&cred, `SELECT * FROM TF_plugin_credentials WHERE account_id = ? ORDER BY id DESC LIMIT 1`, accountID); err != nil {
+		return respond.NewError("PLUGIN_CREDENTIAL_MISSING", "平台凭据缺失，请重新授权", 409)
+	}
+	current, err := s.decryptCredential(&acc, &cred)
+	if err != nil {
+		return err
+	}
+	merged := mergeMaps(current, filtered)
 	if err := s.writeCredential(tx, acc.PluginCode, accountID, merged); err != nil {
 		return err
 	}

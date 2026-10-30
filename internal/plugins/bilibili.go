@@ -555,9 +555,12 @@ func (c *bilibiliClient) comicSign(ctx context.Context) sign.Record {
 		return invalidRecord("comic_sign", "comic:comic_sign")
 	}
 	code := sign.ValueInt(resp.JSON["code"])
+	message := firstText(resp.JSON["message"], resp.JSON["msg"])
 	status := "failed"
 	if code == 0 {
 		status = "succeeded"
+	} else if alreadyDoneMessage(message) {
+		status = "already_done"
 	}
 	return sign.Record{
 		Key: "comic:comic_sign", Action: "comic_sign", Status: status,
@@ -614,15 +617,20 @@ func videoRecord(resp *sign.Response, action string, video map[string]any, succe
 		}
 	}
 	code := sign.ValueInt(resp.JSON["code"])
+	message := firstText(resp.JSON["message"], resp.JSON["msg"])
 	status := "failed"
 	if code == 0 {
 		status = "succeeded"
+	} else if alreadyDoneMessage(message) {
+		status = "already_done"
 	}
 	return sign.Record{
 		Key: action + ":" + sign.ValueString(video["aid"]), Action: action, Status: status,
 		TargetType: "video", TargetID: sign.ValueString(video["aid"]), TargetName: sign.ValueString(video["bvid"]),
-		Code:    itoa(code),
-		Message: firstText(resp.JSON["message"], pick(status == "succeeded", successMessage, "任务失败")),
+		Code: itoa(code),
+		Message: firstText(message, map[string]string{
+			"succeeded": successMessage, "already_done": "任务今日已完成", "failed": "任务失败",
+		}[status]),
 		Metrics: map[string]any{"bvid": sign.ValueString(video["bvid"])},
 	}
 }
@@ -656,7 +664,12 @@ func failedRecord(action string, err error) sign.Record {
 
 func alreadyDoneMessage(message string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(message))
-	return strings.Contains(normalized, "已领取") || strings.Contains(normalized, "已经领取") || strings.Contains(normalized, "already")
+	for _, marker := range []string{"已领取", "已经领取", "已投币", "已经投币", "已分享", "已经分享", "已观看", "已经观看", "重复领取", "不能重复", "already"} {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func collectRewards(data map[string]any) []any {

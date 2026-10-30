@@ -112,7 +112,7 @@ func sportSteps(c *sign.Context) int {
 		}
 	}
 	rangeSize := maximum - minimum + 1
-	seed := sha256.Sum256([]byte(dateToday() + ":" + strconv.FormatInt(c.AccountID, 10) + ":sport"))
+	seed := sha256.Sum256([]byte(dateTodayCST() + ":" + strconv.FormatInt(c.AccountID, 10) + ":sport"))
 	offset := int(uint32(seed[0])<<24|uint32(seed[1])<<16|uint32(seed[2])<<8|uint32(seed[3])) % rangeSize
 	return minimum + offset
 }
@@ -368,8 +368,7 @@ func (c *sportClient) updateSteps(ctx context.Context, steps int) (sign.Record, 
 	if err != nil {
 		return sign.Record{}, err
 	}
-	location := time.FixedZone("CST", 8*3600)
-	date := time.Now().In(location).Format("2006-01-02")
+	date := dateTodayCST()
 	deviceID := sign.ValueString(session["device_id"])
 	sum := sha256.Sum256([]byte(deviceID))
 	bandDeviceID := strings.ToUpper(hex.EncodeToString(sum[:])[:16])

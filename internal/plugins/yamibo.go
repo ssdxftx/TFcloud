@@ -316,11 +316,14 @@ func yamiboAccount(text, cookie string) yamiboAccountInfo {
 	for _, match := range yamiboProfileLinkPattern.FindAllStringSubmatch(text, -1) {
 		uid := strings.TrimSpace(match[1])
 		name := strings.TrimSpace(html.UnescapeString(match[2]))
-		if info.UID == "" && uid != "" {
-			info.UID = uid
-		}
 		if info.Username == "" && name != "" && name != "匿名" {
 			info.Username = name
+			if info.UID == "" {
+				info.UID = uid
+			}
+		} else if info.UID == "" && info.Username != "" && name == info.Username {
+			// 只在链接名称与 vwmy 用户名一致时补 UID，避免把页面里其他用户当成当前账号。
+			info.UID = uid
 		}
 		if info.UID != "" && info.Username != "" {
 			break

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"sort"
@@ -177,14 +178,43 @@ type HTTP struct {
 
 func NewHTTP() *HTTP {
 	return &HTTP{Client: &http.Client{
-		Timeout: 25 * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 10 {
-				return http.ErrUseLastResponse
-			}
-			return nil
-		},
+		Timeout:       25 * time.Second,
+		CheckRedirect: checkRedirect,
 	}}
+}
+
+func checkRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return http.ErrUseLastResponse
+	}
+	if req.URL.Scheme != "https" {
+		return fmt.Errorf("拒绝非 HTTPS 重定向")
+	}
+	if isPrivateRedirectHost(req.URL.Hostname()) {
+		return fmt.Errorf("拒绝重定向到内网地址")
+	}
+	if len(via) > 0 && !strings.EqualFold(req.URL.Hostname(), via[0].URL.Hostname()) {
+		// 跨主机 POST 会重放表单里的账号密码/令牌，直接拒绝。
+		if req.Method != http.MethodGet && req.Method != http.MethodHead {
+			return fmt.Errorf("拒绝跨主机 POST 重定向")
+		}
+		for _, key := range []string{"Authorization", "Cookie", "Apptoken", "X-Auth-Token"} {
+			req.Header.Del(key)
+		}
+	}
+	return nil
+}
+
+func isPrivateRedirectHost(host string) bool {
+	host = strings.TrimSpace(strings.ToLower(host))
+	if host == "localhost" || strings.HasSuffix(host, ".local") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified()
 }
 
 type RequestOptions struct {

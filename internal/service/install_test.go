@@ -55,13 +55,14 @@ func TestInstallReusesExistingSecretsAndEnv(t *testing.T) {
 	cfg := &config.Config{
 		DataDir: dir, Database: store.Path, HTTPAddr: ":8787",
 		AppKey: appKey, FingerprintKey: fingerprint, SignWorkerCount: 2,
+		InstallToken: "test-install-token",
 	}
 	t.Setenv("APP_KEY", "")
 	t.Setenv("CREDENTIAL_FINGERPRINT_KEY", "")
 	t.Setenv("SESSION_SECURE", "")
 	t.Setenv("CORS_ALLOWED_ORIGINS", "")
 	svc := NewInstall(store, cfg, NewSettings(store, cfg))
-	input := InstallInput{SiteURL: "https://example.com"}
+	input := InstallInput{SiteURL: "https://example.com", InstallToken: "test-install-token"}
 	input.Admin.Username = "admin"
 	input.Admin.Password = "password123"
 	if _, err := svc.Run(input); err != nil {
@@ -80,5 +81,25 @@ func TestInstallReusesExistingSecretsAndEnv(t *testing.T) {
 	}
 	if !strings.Contains(envText, "CUSTOM_FLAG=keep-me") {
 		t.Fatal("安装应保留 .env 中的自定义配置")
+	}
+}
+
+func TestInstallRequiresToken(t *testing.T) {
+	store := newTestStore(t)
+	dir := t.TempDir()
+	cfg := &config.Config{DataDir: dir, Database: store.Path, HTTPAddr: ":8787", InstallToken: "expected-token"}
+	svc := NewInstall(store, cfg, NewSettings(store, cfg))
+	input := InstallInput{SiteURL: "https://example.com", InstallToken: "wrong-token"}
+	input.Admin.Username = "admin"
+	input.Admin.Password = "password123"
+	if _, err := svc.Run(input); err == nil {
+		t.Fatal("错误安装令牌不应通过")
+	}
+	var admins int
+	if err := store.Read.Get(&admins, `SELECT COUNT(1) FROM TF_users WHERE role='admin'`); err != nil {
+		t.Fatal(err)
+	}
+	if admins != 0 {
+		t.Fatal("令牌校验失败时不应创建管理员")
 	}
 }

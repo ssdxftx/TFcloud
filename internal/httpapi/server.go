@@ -64,11 +64,6 @@ func userID(r *http.Request) int64 {
 	return 0
 }
 
-func isAdmin(r *http.Request) bool {
-	p := middleware.FromContext(r.Context())
-	return p != nil && p.IsAdmin()
-}
-
 func pathInt(r *http.Request, key string) (int64, error) {
 	raw := chi.URLParam(r, key)
 	id, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)

@@ -102,7 +102,7 @@
 | 二进制 | — | 17–22MB（含前端） |
 | 前端 | React 19 + HeroUI | **完全一致**（仅安装页与构建输出路径改动） |
 
-接口层保持兼容：统一信封 `{code, message, data, request_id}`、Bearer Token + Cookie 双通道、
+接口层保持兼容：统一信封 `{code, message, data, request_id}`、Cookie 会话（后端仍接受已有 Bearer Token）、
 `X-Request-Id`、错误码与分页结构均未变，所以前端不需要改调用。
 
 ---
@@ -426,7 +426,8 @@ install -m 755 tfcloud.new /usr/local/bin/tfcloud
 systemctl start tfcloud
 ```
 
-数据库迁移在启动时自动执行（schema 全幂等），不需要手工跑 SQL。
+数据库迁移在启动时自动执行：`schema.sql` 作为基线，`internal/database/migrations/*.sql` 按编号增量应用，已应用版本记录在 `schema_migrations`，不需要手工跑 SQL。
+人机验证、登录失败计数和 IP 限流已落到 SQLite 共享表，多实例访问同一个数据库时共用状态。
 升级前建议先做一次备份（见下）。
 
 #### 备份
@@ -469,11 +470,12 @@ rm -rf /opt/tfcloud          # 数据在这，想保留就先备份 data/
 
 ## 六、安装向导
 
-访问 `http://你的域名/install`，四步：
+访问 `http://你的域名/install`。首次安装需要一个一次性令牌：容器启动日志里的 `install_token`，或数据目录下的 `data/install.token`。四步：
 
 | 步骤 | 内容 | 说明 |
 |---|---|---|
 | ① 环境检测 | 数据目录可写、SQLite 版本、磁盘余量、是否重复安装 | 全部通过才能下一步 |
+| 安装令牌 | 启动日志或 `data/install.token` | 防止未安装实例被抢先接管 |
 | ② 存储与运行 | 内嵌数据库说明 + 「检测存储」按钮 | 会写一个探针文件并读磁盘，不动业务数据 |
 | ③ 站点与管理员 | 站点地址、管理员账号密码、Secure Cookie | 站点地址填最终 HTTPS 域名 |
 | ④ 完成 | 自动生成 `APP_KEY` / 指纹密钥并写入 `data/.env` | **无需重启**，配置即时生效 |
@@ -490,7 +492,7 @@ data/
 └── uploads/
 ```
 
-**默认策略**：注册关闭、登录需要滑块人机验证、注册同样需要验证。
+**默认策略**：注册关闭、登录需要图形验证码、注册同样需要验证。
 这些都能在「管理后台 → 设置 → 站点」里改。
 
 ---
@@ -511,7 +513,7 @@ data/
 | 天翼云盘 | 账号密码 | 手机号或邮箱 + 密码 | 直接填；若提示设备锁，先去网页端完成一次验证 |
 | 哔咔漫画 | 账号密码 | 邮箱 + 密码 | 直接填 |
 | 赛马娘 | Cookie 导入 | 合并的完整 Cookie（含 `site`、`joy_jct`、`DedeUserID`、`SESSDATA`） | 登录 uma.komoejoy.com → F12 → Application → Cookies 复制同名项 |
-| Yamibo（百合会 / 300） | Cookie 导入 | 论坛完整 Cookie（需包含通过 WAF 后的 `nox_jst_v1` 等） | 浏览器登录 bbs.yamibo.com 并通过验证 → F12 → Cookies 复制 |
+| Yamibo（百合会 / 300） | Cookie 导入 | 论坛完整 Cookie（需包含通过 WAF 后的 `nox_jst_v1` 等） | 浏览器登录 bbs.yamibo.com 并通过验证 → F12 → Cookies 复制；服务端遇到 WAF 会明确报 `YAMIBO_WAF_BLOCKED`，此时需要浏览器侧完成打卡 |
 | V2EX | Cookie 导入 | `PB3_SESSION`、`A2`（`V2EX_LANG`、`V2EX_TAB` 可选） | 登录 v2ex.com → F12 → Application → Cookies |
 
 **关于凭据安全**：所有凭据用 XChaCha20-Poly1305 加密后入库，AAD 绑定「插件 + 账号 ID + 类型」，
@@ -624,6 +626,7 @@ data/
 | `APP_ENV` | `production` | 环境标识 |
 | `APP_DEBUG` | `false` | 打开后日志降为 DEBUG |
 | `TZ` | 系统时区 | 容器建议 `Asia/Shanghai` |
+| `TF_INSTALL_TOKEN` | 空 | 可选的固定安装令牌；留空自动生成一次性令牌 |
 | `APP_KEY` | 安装时生成 | **凭据加密根密钥，32 字节**（`base64:` 前缀亦可） |
 | `CREDENTIAL_FINGERPRINT_KEY` | 安装时生成 | 凭据指纹 HMAC 密钥 |
 | `CREDENTIAL_KEY_VERSION` | `1` | 密钥版本号，轮换时递增 |
@@ -641,6 +644,8 @@ data/
 | `MAIL_WORKER_INTERVAL_SECONDS` | `10` | 邮件轮询间隔 |
 | `MAINTENANCE_ENABLED` | `true` | 清理 / 恢复僵死任务 / WAL 截断 |
 | `TASK_LOCK_TIMEOUT_SECONDS` | `7200` | 任务锁超时，超过即视为进程崩溃并回收 |
+| `TF_RETENTION_DAYS` | `0` | 任务/邮件/通知/已删除账号保留天数，0 表示永久保留 |
+| `TF_AUDIT_RETENTION_DAYS` | `365` | 审计日志保留天数，0 表示永久保留 |
 | `SESSION_TTL_DAYS` | `30` | 会话有效期 |
 | `UPDATE_VERSION_URL` / `UPDATE_PAGE_URL` | 上游地址 | 版本检查地址，可改自己的 |
 
@@ -676,7 +681,7 @@ tfcloud version                  # 版本
 已安装      : true
 APP_KEY     : 正常（32 字节）
 指纹密钥    : 已配置
-数据表      : 20 张
+数据表      : 23 张
 插件        : 10 个
   - tieba      百度贴吧 v0.1.0
   ...
@@ -693,10 +698,12 @@ APP_KEY     : 正常（32 字节）
 | 签到任务 / 记录 | 每账号每天 1 任务 + N 条记录（贴吧≈关注数） | 主要增长源 |
 | 会话 | 每次登录 1 行 | 过期自动清理 |
 | 邮件记录 | 每封 1 行 | 可在后台删除 |
-| 审计日志 | 每次管理操作 1 行 | 长期保留 |
+| 审计日志 | 每次管理操作 1 行 | 默认保留 365 天，可用 `TF_AUDIT_RETENTION_DAYS` 调整 |
 
 维护任务会自动清理：过期会话（保留 30 天吊销记录）、过期验证码（24 小时）、
 已消费改密记录（7 天）、过期授权流、过期响应载荷；每小时截断 WAL。
+设置 `TF_RETENTION_DAYS` 后，会按天数清理已完成任务、邮件记录、通知事件和已删除账号；
+`TF_AUDIT_RETENTION_DAYS` 控制审计日志保留期。
 
 清理历史任务（目前没有一键删除，需要时用 SQL）：
 
@@ -745,6 +752,8 @@ DELETE FROM TF_sign_tasks WHERE created_at < date('now','-90 day');
 | 任务卡在 `running` | 进程崩溃过，等维护任务回收（默认 2 小时），或重启服务立即回收 |
 | 时间不对 | 容器 `TZ=Asia/Shanghai`；裸机 `timedatectl` 检查 |
 
+> 升级说明：前端已改为只使用 HttpOnly Cookie，旧版本留在 `localStorage` 的 token 会被清理，升级后需要重新登录一次。
+
 ### 错误码速查
 
 **通用**
@@ -752,9 +761,15 @@ DELETE FROM TF_sign_tasks WHERE created_at < date('now','-90 day');
 | 错误码 | 含义 |
 |---|---|
 | `INSTALL_REQUIRED` | 未安装，前端会自动跳 `/install` |
+| `INSTALL_TOKEN_INVALID` | 安装令牌不正确，见启动日志或 `data/install.token` |
+| `INSTALL_INCONSISTENT` | 数据库已有管理员但安装标记缺失，需要命令行恢复 |
 | `UNAUTHENTICATED` / `AUTH_INVALID_CREDENTIALS` | 未登录 / 账号密码错误 |
-| `HUMAN_VERIFICATION_REQUIRED` | 需要先完成滑块验证 |
+| `AUTH_ACCOUNT_LOCKED` | 同一账号连续失败次数过多，15 分钟内暂停密码登录 |
+| `CURRENT_PASSWORD_INVALID` | 修改/绑定邮箱时当前密码不正确 |
+| `REGISTRATION_EMAIL_VERIFICATION_UNAVAILABLE` | 已开启注册邮箱验证但邮件服务未配置 |
+| `HUMAN_VERIFICATION_REQUIRED` | 需要先完成图形验证码 |
 | `RATE_LIMITED` | 触发限流（登录 10 次/分，其余认证 30 次/分） |
+| `CSRF_TOKEN_INVALID` | 状态变更请求缺少或携带了错误的 CSRF 令牌，刷新页面后重试 |
 | `VALIDATION_FAILED` | 参数校验失败，看 `message` |
 | `USER_FIELD_DUPLICATE` | 用户名 / 邮箱 / QQ 已被占用 |
 | `VERIFICATION_CODE_*` | 验证码过期、错误、锁定或过于频繁 |
@@ -767,16 +782,18 @@ DELETE FROM TF_sign_tasks WHERE created_at < date('now','-90 day');
 | `PLUGIN_CREDENTIAL_INVALID` | 凭据缺失或格式不对 |
 | `PLUGIN_CREDENTIAL_MISSING` | 数据库里没有该账号的凭据记录，重新授权 |
 | `UPSTREAM_REQUEST_FAILED` | 上游网络失败；贴吧会据此持续补签 |
+| `UPSTREAM_RESPONSE_TOO_LARGE` | 上游响应超过 8MB，已拒绝解析 |
 | `UPSTREAM_HTTP_ERROR` | 平台返回 5xx，稍后自动重试 |
 | `TIEBA_TBS_FAILED` | 贴吧签名参数获取失败，通常是登录态问题 |
 | `TIEBA_FORUM_LIST_STALLED` | 关注列表分页异常，已中止避免重复签到 |
+| `TIEBA_RETRY_TARGET_MISSING` | 补签目标已不在关注列表缓存，需完整重跑 |
 | `CLOUD189_INTERACTION_REQUIRED` | 天翼云盘要求设备验证，先去网页端过一次 |
 | `SPORT_RATE_LIMITED` / `PICACOMIC_RATE_LIMITED` | 平台限流，降低执行频率 |
-| `BILIBILI_MEDAL_EMPTY` | 没有可挂机的粉丝牌 |
 | `UMA_API_ERROR` / `UMA_SIGN_FAILED` | 赛马娘接口异常或签到失败，检查 Cookie 后重试 |
-| `YAMIBO_WAF_BLOCKED` | Yamibo 触发 WAF，服务器无法执行浏览器挑战，请改用 Cookie 导入 |
+| `YAMIBO_WAF_BLOCKED` | Yamibo 触发 WAF，先在浏览器通过验证后重新导入 Cookie |
 | `V2EX_RESPONSE_INVALID` / `V2EX_SIGN_FAILED` | V2EX 页面结构变化或签到失败，检查 Cookie 后重试 |
 | `TASK_NOT_RETRYABLE` / `TASK_RETRY_EXHAUSTED` | 状态不允许重试 / 重试次数用完 |
+| `TASK_RUN_CREATE_FAILED` / `TASK_LOCK_LOST` | 创建执行记录失败 / 任务锁失效，结果未写回 |
 | `PLUGIN_ACCOUNT_DISABLED` | 账号被停用，启用后再执行 |
 
 **功能未开放**
@@ -810,7 +827,7 @@ DELETE FROM TF_sign_tasks WHERE created_at < date('now','-90 day');
 cmd/tfcloud/            入口（serve / migrate / admin / doctor / version）
 internal/
 ├── config/             .env 加载与结构体
-├── database/           连接池、schema.sql（20 表）、迁移、Maps 查询
+├── database/           连接池、schema.sql 基线、增量迁移、Maps 查询
 ├── secure/             XChaCha20-Poly1305、argon2id、bcrypt 兼容、指纹
 ├── model/              表结构体
 ├── sign/               插件契约、注册表、HTTP 客户端、心跳签名

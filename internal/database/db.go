@@ -5,9 +5,12 @@ import (
 	"database/sql"
 	"embed"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +20,15 @@ import (
 
 //go:embed schema.sql
 var schemaFS embed.FS
+
+//go:embed migrations/*.sql
+var migrationsFS embed.FS
+
+type migration struct {
+	Version int
+	Name    string
+	Body    []byte
+}
 
 const (
 	// TimeLayout 与 MySQL DATETIME 的字符串输出保持一致，接口对前端零差异。
@@ -51,6 +63,7 @@ func Open(path string) (*Store, error) {
 	if err := write.Ping(); err != nil {
 		return nil, fmt.Errorf("数据库不可用: %w", err)
 	}
+	hardenPermissions(path)
 
 	read, err := sqlx.Open("sqlite", dsn+"&_pragma=query_only(1)")
 	if err != nil {
@@ -59,8 +72,15 @@ func Open(path string) (*Store, error) {
 	read.SetMaxOpenConns(maxInt(4, 4))
 	read.SetMaxIdleConns(4)
 	read.SetConnMaxLifetime(0)
+	hardenPermissions(path)
 
 	return &Store{Read: read, Write: write, Path: path}, nil
+}
+
+func hardenPermissions(path string) {
+	for _, name := range []string{path, path + "-wal", path + "-shm"} {
+		_ = os.Chmod(name, 0o600)
+	}
 }
 
 func buildDSN(path string) string {
@@ -84,34 +104,90 @@ func (s *Store) Close() error {
 	return nil
 }
 
-// Migrate 以幂等方式建表；schema.sql 全部使用 IF NOT EXISTS。
+// Migrate 先执行基线 schema，再按编号应用增量迁移。
 func (s *Store) Migrate(ctx context.Context) error {
 	body, err := schemaFS.ReadFile("schema.sql")
 	if err != nil {
 		return err
 	}
-	stmts := splitStatements(string(body))
+	migrations, err := loadMigrations()
+	if err != nil {
+		return err
+	}
 	tx, err := s.Write.BeginTxx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	for i, stmt := range stmts {
-		if _, err := tx.ExecContext(ctx, stmt); err != nil {
-			return fmt.Errorf("执行建表语句 #%d 失败: %w", i+1, err)
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
+		version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)`); err != nil {
+		return err
+	}
+	if err := applyStatements(ctx, tx, "schema.sql", body); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO schema_migrations(version, applied_at) VALUES(1, ?) ON CONFLICT(version) DO NOTHING`,
+		NowMs()); err != nil {
+		return err
+	}
+	var current int
+	if err := tx.GetContext(ctx, &current, `SELECT COALESCE(MAX(version), 0) FROM schema_migrations`); err != nil {
+		return err
+	}
+	for _, m := range migrations {
+		if m.Version <= current {
+			continue
+		}
+		if err := applyStatements(ctx, tx, m.Name, m.Body); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES(?, ?)`, m.Version, NowMs()); err != nil {
+			return err
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	if _, err := s.Write.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
-		version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)`); err != nil {
-		return err
+	hardenPermissions(s.Path)
+	return nil
+}
+
+func applyStatements(ctx context.Context, tx *sqlx.Tx, name string, body []byte) error {
+	for i, stmt := range splitStatements(string(body)) {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("执行迁移 %s 语句 #%d 失败: %w", name, i+1, err)
+		}
 	}
-	_, err = s.Write.ExecContext(ctx,
-		`INSERT INTO schema_migrations(version, applied_at) VALUES(1, ?) ON CONFLICT(version) DO NOTHING`,
-		NowMs())
-	return err
+	return nil
+}
+
+func loadMigrations() ([]migration, error) {
+	entries, err := fs.ReadDir(migrationsFS, "migrations")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]migration, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
+			continue
+		}
+		parts := strings.SplitN(entry.Name(), "_", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("迁移文件名无效: %s", entry.Name())
+		}
+		version, err := strconv.Atoi(parts[0])
+		if err != nil || version <= 1 {
+			return nil, fmt.Errorf("迁移版本无效: %s", entry.Name())
+		}
+		body, err := migrationsFS.ReadFile("migrations/" + entry.Name())
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, migration{Version: version, Name: entry.Name(), Body: body})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Version < out[j].Version })
+	return out, nil
 }
 
 // Checkpoint 定期截断 WAL，避免单文件无限增长。

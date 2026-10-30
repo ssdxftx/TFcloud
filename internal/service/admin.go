@@ -455,9 +455,9 @@ func (s *AdminService) Accounts(filters map[string]any) (map[string]any, error) 
 		Username     string `db:"username"`
 		CredentialID *int64 `db:"credential_id"`
 	}{}
-	if err := s.store.Read.Select(&rows, `SELECT a.*, u.username AS username, c.id AS credential_id
+	if err := s.store.Read.Select(&rows, `SELECT a.*, u.username AS username,
+		(SELECT MIN(c.id) FROM TF_plugin_credentials c WHERE c.account_id = a.id) AS credential_id
 		FROM TF_plugin_accounts a JOIN TF_users u ON u.id=a.user_id
-		LEFT JOIN TF_plugin_credentials c ON c.account_id=a.id
 		WHERE `+clause+` ORDER BY a.id DESC LIMIT ? OFFSET ?`, append(args, perPage, offset)...); err != nil {
 		return nil, err
 	}

@@ -31,8 +31,8 @@ export interface User {
 }
 
 export interface LoginResult {
-  access_token: string;
-  token_type: string;
+  access_token?: string;
+  token_type?: string;
   expires_at: string;
   user: User;
 }
@@ -40,7 +40,7 @@ export interface LoginResult {
 export interface HumanChallenge {
   challenge_id: string;
   expires_in: number;
-  minimum_interaction_ms: number;
+  captcha_image: string;
 }
 
 export interface HumanChallengeVerification {
@@ -252,6 +252,7 @@ export interface InstallStatus {
   env_exists: boolean;
   can_install: boolean;
   restart_hint: string;
+  install_token_required?: boolean;
 }
 
 export interface InstallCheckItem {

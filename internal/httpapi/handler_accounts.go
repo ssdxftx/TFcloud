@@ -232,6 +232,9 @@ func (s *Server) tasksStore(w http.ResponseWriter, r *http.Request) {
 		respond.Fail(w, r, err)
 		return
 	}
+	s.Audit.Record(userID(r), "sign.task.create", "sign_task", strOf(out["task_no"]), map[string]any{
+		"account_id": accountID, "action": action,
+	}, respond.RequestID(r.Context()))
 	respond.Created(w, r, out)
 }
 
@@ -278,6 +281,7 @@ func (s *Server) tasksRetry(w http.ResponseWriter, r *http.Request) {
 		respond.Fail(w, r, err)
 		return
 	}
+	s.Audit.Record(userID(r), "sign.task.retry", "sign_task", path(r, "taskNo"), nil, respond.RequestID(r.Context()))
 	respond.Message(w, r, out, "任务已重新排队")
 }
 
@@ -287,6 +291,7 @@ func (s *Server) tasksCancel(w http.ResponseWriter, r *http.Request) {
 		respond.Fail(w, r, err)
 		return
 	}
+	s.Audit.Record(userID(r), "sign.task.cancel", "sign_task", path(r, "taskNo"), nil, respond.RequestID(r.Context()))
 	respond.Message(w, r, out, "任务已取消")
 }
 

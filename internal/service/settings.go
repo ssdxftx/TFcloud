@@ -3,14 +3,12 @@ package service
 import (
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/mail"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -33,10 +31,6 @@ type Field struct {
 type SettingsService struct {
 	store *database.Store
 	cfg   *config.Config
-
-	mu    sync.RWMutex
-	cache map[string]map[string]any
-	at    time.Time
 }
 
 func NewSettings(store *database.Store, cfg *config.Config) *SettingsService {
@@ -228,7 +222,7 @@ func (s *SettingsService) PublicSite() map[string]any {
 	}
 	site["qq_login_enabled"] = truthy(site["qq_login_enabled"]) &&
 		strings.TrimSpace(str(site["qq_callback_url"])) != "" && providerReady
-	site["registration_email_verification"] = truthy(site["registration_email_verification"]) && truthy(mailGroup["enabled"])
+	site["registration_email_verification"] = truthy(site["registration_email_verification"])
 	site["mail_enabled"] = truthy(mailGroup["enabled"])
 	site["timezone_offset"] = time.Now().Format("-07:00")
 	site["today"] = time.Now().Format("2006-01-02")
@@ -452,5 +446,3 @@ func asInt(v any) int {
 		return 0
 	}
 }
-
-var errNotFound = errors.New("not found")

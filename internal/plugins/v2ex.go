@@ -98,9 +98,9 @@ func (p *V2EX) Execute(ctx context.Context, c *sign.Context) (*sign.Result, erro
 	balance, todayReward, balanceErr := client.balance(ctx)
 	if balanceErr == nil {
 		if todayReward != "" && record.Status == "failed" {
-			record.Status = "succeeded"
+			record.Status = "already_done"
 			record.Code = ""
-			record.Message = "签到成功"
+			record.Message = "今日登录奖励已领取"
 		}
 		if todayReward != "" {
 			parts := []string{}

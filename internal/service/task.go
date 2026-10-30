@@ -6,7 +6,10 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/jmoiron/sqlx"
 
 	"tfcloud/internal/config"
 	"tfcloud/internal/database"
@@ -33,19 +36,23 @@ type TaskService struct {
 	audit    *AuditService
 	mail     *MailService
 	logger   *slog.Logger
+
+	runMu      sync.Mutex
+	runCancels map[int64]*runCancel
+}
+
+type runCancel struct {
+	cancel context.CancelFunc
 }
 
 func NewTask(store *database.Store, cfg *config.Config, settings *SettingsService, accounts *AccountService,
 	registry *sign.Registry, audit *AuditService, mail *MailService, logger *slog.Logger) *TaskService {
 	return &TaskService{store: store, cfg: cfg, settings: settings, accounts: accounts,
-		registry: registry, audit: audit, mail: mail, logger: logger}
+		registry: registry, audit: audit, mail: mail, logger: logger,
+		runCancels: make(map[int64]*runCancel)}
 }
 
 // ---------- 创建 ----------
-
-func (s *AccountService) createTask(userID, accountID int64, action, triggerType, scheduleDate string) (map[string]any, error) {
-	return nil, respond.Internal("task service not wired")
-}
 
 func (s *TaskService) Create(userID, accountID int64, action, triggerType, scheduleDate, requestID string) (map[string]any, error) {
 	acc, err := s.accounts.findOwned(userID, accountID)
@@ -322,11 +329,14 @@ func (s *TaskService) Retry(userID int64, taskNo string) (map[string]any, error)
 		return nil, respond.NewError("TASK_RETRY_EXHAUSTED", "任务重试次数已经用完", 409)
 	}
 	now := database.Now()
-	_, err = s.store.Write.Exec(`UPDATE TF_sign_tasks SET status='pending', available_at=?, locked_at=NULL,
+	res, err := s.store.Write.Exec(`UPDATE TF_sign_tasks SET status='pending', available_at=?, locked_at=NULL,
 		locked_by=NULL, finished_at=NULL, last_error_code=NULL, last_error_message=NULL, updated_at=?
-		WHERE id=?`, now, now, task.ID)
+		WHERE id=? AND status IN ('failed','partial','cancelled')`, now, now, task.ID)
 	if err != nil {
 		return nil, err
+	}
+	if affected, _ := res.RowsAffected(); affected == 0 {
+		return nil, respond.NewError("TASK_NOT_RETRYABLE", "任务状态已变化，无法重试", 409)
 	}
 	return s.Show(userID, taskNo)
 }
@@ -336,18 +346,19 @@ func (s *TaskService) Cancel(userID int64, taskNo string) (map[string]any, error
 	if err != nil {
 		return nil, err
 	}
-	if !contains([]string{"pending", "retrying"}, task.Status) {
+	if !contains([]string{"pending", "retrying", "running"}, task.Status) {
 		return nil, respond.NewError("TASK_NOT_CANCELLABLE", "当前任务状态不能取消", 409)
 	}
 	now := database.Now()
-	res, err := s.store.Write.Exec(`UPDATE TF_sign_tasks SET status='cancelled', finished_at=?, updated_at=?
-		WHERE id=? AND status IN ('pending','retrying')`, now, now, task.ID)
+	res, err := s.store.Write.Exec(`UPDATE TF_sign_tasks SET status='cancelled', finished_at=?, locked_at=NULL, locked_by=NULL, updated_at=?
+		WHERE id=? AND status IN ('pending','retrying','running')`, now, now, task.ID)
 	if err != nil {
 		return nil, err
 	}
 	if affected, _ := res.RowsAffected(); affected == 0 {
-		return nil, respond.NewError("TASK_NOT_CANCELLABLE", "任务已开始执行或状态已变化，无法取消", 409)
+		return nil, respond.NewError("TASK_NOT_CANCELLABLE", "任务状态已变化，无法取消", 409)
 	}
+	s.cancelRun(task.ID)
 	return s.Show(userID, taskNo)
 }
 
@@ -461,18 +472,23 @@ func (s *TaskService) dispatchAccount(acc *model.PluginAccount) bool {
 	}
 	actions = unique(actions)
 
+	allCreated := true
 	for _, act := range actions {
 		if _, err := s.Create(acc.UserID, acc.ID, act, "schedule", time.Now().Format("2006-01-02"), ""); err != nil {
+			allCreated = false
 			s.logger.Warn("schedule task create failed",
 				slog.Int64("account", acc.ID), slog.String("action", act), slog.String("error", err.Error()))
 		}
 	}
-	_, err = s.store.Write.Exec(`UPDATE TF_plugin_accounts SET next_run_at=?, updated_at=? WHERE id=?`,
-		nullableString(nextRun), database.Now(), acc.ID)
-	if err != nil {
-		s.logger.Error("update next_run_at failed", slog.Int64("account", acc.ID), slog.String("error", err.Error()))
+	// 创建失败时保留 next_run_at，让调度器下一轮重试，避免一次瞬时错误跳过当天。
+	if allCreated {
+		_, err = s.store.Write.Exec(`UPDATE TF_plugin_accounts SET next_run_at=?, updated_at=? WHERE id=?`,
+			nullableString(nextRun), database.Now(), acc.ID)
+		if err != nil {
+			s.logger.Error("update next_run_at failed", slog.Int64("account", acc.ID), slog.String("error", err.Error()))
+		}
 	}
-	return len(actions) > 0
+	return allCreated && len(actions) > 0
 }
 
 // RequeueFailedToday 每天 20 点后给当天失败的普通任务追加一次机会。
@@ -487,7 +503,10 @@ func (s *TaskService) RequeueFailedToday(limit int) int {
 	if err := s.store.Read.Select(&rows, `SELECT * FROM TF_sign_tasks
 		WHERE status='failed' AND attempts >= max_attempts AND max_attempts = ?
 		  AND schedule_date = ?
-		  AND (last_error_code IS NULL OR last_error_code NOT IN ('PLUGIN_CREDENTIAL_EXPIRED','PLUGIN_CREDENTIAL_INVALID'))
+		  AND (last_error_code IS NULL OR last_error_code NOT IN
+		    ('PLUGIN_CREDENTIAL_EXPIRED','PLUGIN_CREDENTIAL_INVALID','PLUGIN_CREDENTIAL_MISSING',
+		     'PLUGIN_ACCOUNT_DISABLED','PLUGIN_ACCOUNT_NOT_FOUND','PLUGIN_ACTION_UNSUPPORTED',
+		     'PLUGIN_ACTION_NOT_SUPPORTED','PLUGIN_NOT_FOUND','USER_DISABLED'))
 		ORDER BY id LIMIT ?`, MaxAttempts, time.Now().Format("2006-01-02"), limit); err != nil {
 		return 0
 	}
@@ -548,6 +567,12 @@ func (s *TaskService) Claim(workerID, queue string) (*model.SignTask, bool) {
 }
 
 func (s *TaskService) ExecuteTask(ctx context.Context, task *model.SignTask, workerID string) {
+	ctx, done := s.registerRunCancel(ctx, task.ID)
+	defer done()
+	var currentStatus string
+	if err := s.store.Read.Get(&currentStatus, `SELECT status FROM TF_sign_tasks WHERE id=?`, task.ID); err != nil || currentStatus != "running" {
+		return
+	}
 	plugin, err := s.registry.Get(task.PluginCode)
 	if err != nil {
 		s.failTask(task, 0, err, time.Now())
@@ -561,6 +586,7 @@ func (s *TaskService) ExecuteTask(ctx context.Context, task *model.SignTask, wor
 		secure.RandomHex(16), task.ID, task.Attempts, task.PluginCode, plugin.Metadata().Version, workerID, now, now)
 	if err != nil {
 		s.logger.Error("create run failed", slog.String("error", err.Error()))
+		s.failTask(task, 0, sign.Fail("TASK_RUN_CREATE_FAILED", "创建执行记录失败", 500), started)
 		return
 	}
 	runID, _ := res.LastInsertId()
@@ -704,11 +730,18 @@ func (s *TaskService) completeTask(task *model.SignTask, runID int64, plugin sig
 	if taskStatus != "retrying" {
 		finished = finishedAt
 	}
-	if _, err := tx.Exec(`UPDATE TF_sign_tasks SET status=?, max_attempts=?, total_count=?, success_count=?,
+	res, err := tx.Exec(`UPDATE TF_sign_tasks SET status=?, max_attempts=?, total_count=?, success_count=?,
 		already_count=?, skipped_count=?, failed_count=?, summary_json=?, last_error_code=?, last_error_message=?,
-		available_at=?, locked_at=NULL, locked_by=NULL, finished_at=?, updated_at=? WHERE id=?`,
+		available_at=?, locked_at=NULL, locked_by=NULL, finished_at=?, updated_at=?
+		WHERE id=? AND status='running' AND locked_by=?`,
 		taskStatus, maxAttempts, taskCounts["total"], taskCounts["success"], taskCounts["already"], taskCounts["skipped"],
-		taskCounts["failed"], mustJSON(summary), errCode, errMessage, availableAt, finished, finishedAt, task.ID); err != nil {
+		taskCounts["failed"], mustJSON(summary), errCode, errMessage, availableAt, finished, finishedAt, task.ID, deref(task.LockedBy))
+	if err != nil {
+		return
+	}
+	if affected, _ := res.RowsAffected(); affected != 1 {
+		s.logger.Warn("task finalization skipped: lock lost", slog.String("task", task.TaskNo))
+		s.markRunLockLost(tx, runID)
 		return
 	}
 
@@ -768,8 +801,14 @@ func mergeRetryCounts(task *model.SignTask, run map[string]int) (map[string]int,
 		out[k] = v
 	}
 	if task.PluginCode != "tieba" || task.LastErrorCode == nil ||
-		*task.LastErrorCode != "UPSTREAM_REQUEST_FAILED" ||
-		str(unmarshalMap(task.SummaryJSON)["request_failed_date"]) != time.Now().Format("2006-01-02") {
+		*task.LastErrorCode != "UPSTREAM_REQUEST_FAILED" {
+		return out, false
+	}
+	scheduleDate := deref(task.ScheduleDate)
+	if scheduleDate == "" {
+		scheduleDate = time.Now().Format("2006-01-02")
+	}
+	if str(unmarshalMap(task.SummaryJSON)["request_failed_date"]) != scheduleDate {
 		return out, false
 	}
 	retried := run["total"] - run["failed"]
@@ -806,7 +845,8 @@ func (s *TaskService) failTask(task *model.SignTask, runID int64, execErr error,
 	continuous := task.PluginCode == "tieba" && code == "UPSTREAM_REQUEST_FAILED" &&
 		task.Attempts < MaxTiebaAttempts
 	ordinary := task.PluginCode != "tieba" && task.Attempts < task.MaxAttempts
-	retryable := !credentialExpired && !userDisabled && (continuous || ordinary)
+	permanent := isPermanentFailureCode(code)
+	retryable := !credentialExpired && !userDisabled && !permanent && (continuous || ordinary)
 
 	nextStatus := "failed"
 	var availableAt any
@@ -835,10 +875,18 @@ func (s *TaskService) failTask(task *model.SignTask, runID int64, execErr error,
 	if nextStatus != "retrying" {
 		finished = finishedAt
 	}
-	_, _ = tx.Exec(`UPDATE TF_sign_tasks SET status=?, max_attempts=?, failed_count=MAX(failed_count,1),
+	res, err := tx.Exec(`UPDATE TF_sign_tasks SET status=?, max_attempts=?, failed_count=MAX(failed_count,1),
 		last_error_code=?, last_error_message=?, available_at=?, locked_at=NULL, locked_by=NULL,
-		finished_at=?, updated_at=? WHERE id=?`,
-		nextStatus, maxAttempts, code, message, availableAt, finished, finishedAt, task.ID)
+		finished_at=?, updated_at=? WHERE id=? AND status='running' AND locked_by=?`,
+		nextStatus, maxAttempts, code, message, availableAt, finished, finishedAt, task.ID, deref(task.LockedBy))
+	if err != nil {
+		return
+	}
+	if affected, _ := res.RowsAffected(); affected != 1 {
+		s.logger.Warn("task failure skipped: lock lost", slog.String("task", task.TaskNo))
+		s.markRunLockLost(tx, runID)
+		return
+	}
 
 	accountErr := any(code)
 	accountErrMessage := any(message)
@@ -851,6 +899,44 @@ func (s *TaskService) failTask(task *model.SignTask, runID int64, execErr error,
 		finishedAt, accountErr, accountErrMessage, credentialExpired, finishedAt, task.AccountID)
 	if err := tx.Commit(); err != nil {
 		s.logger.Error("fail task commit failed", slog.String("error", err.Error()))
+	}
+}
+
+func (s *TaskService) markRunLockLost(tx *sqlx.Tx, runID int64) {
+	if runID <= 0 || tx == nil {
+		return
+	}
+	_, _ = tx.Exec(`UPDATE TF_sign_runs SET status='failed', failed_count=MAX(failed_count,1),
+		error_code='TASK_LOCK_LOST', error_message='任务锁已失效，本次执行结果未写入任务', finished_at=?, updated_at=?
+		WHERE id=? AND status='running'`, database.Now(), database.Now(), runID)
+	_ = tx.Commit()
+}
+
+func (s *TaskService) registerRunCancel(parent context.Context, taskID int64) (context.Context, func()) {
+	ctx, cancel := context.WithCancel(parent)
+	entry := &runCancel{cancel: cancel}
+	s.runMu.Lock()
+	if s.runCancels == nil {
+		s.runCancels = make(map[int64]*runCancel)
+	}
+	s.runCancels[taskID] = entry
+	s.runMu.Unlock()
+	return ctx, func() {
+		cancel()
+		s.runMu.Lock()
+		if s.runCancels[taskID] == entry {
+			delete(s.runCancels, taskID)
+		}
+		s.runMu.Unlock()
+	}
+}
+
+func (s *TaskService) cancelRun(taskID int64) {
+	s.runMu.Lock()
+	entry := s.runCancels[taskID]
+	s.runMu.Unlock()
+	if entry != nil {
+		entry.cancel()
 	}
 }
 
@@ -928,12 +1014,14 @@ type progressReporter struct {
 	task   *model.SignTask
 	runID  int64
 	used   bool
-	mu     chan struct{}
+	mu     sync.Mutex
 	totals map[string]int
 	seq    int
 }
 
 func (p *progressReporter) push(rec sign.Record) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if p.totals == nil {
 		p.totals = map[string]int{"total": 0, "success": 0, "already": 0, "skipped": 0, "failed": 0}
 	}
@@ -943,10 +1031,16 @@ func (p *progressReporter) push(rec sign.Record) {
 }
 
 func (p *progressReporter) counts() map[string]int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if p.totals == nil {
 		return map[string]int{"total": 0, "success": 0, "already": 0, "skipped": 0, "failed": 0}
 	}
-	return p.totals
+	out := make(map[string]int, len(p.totals))
+	for k, v := range p.totals {
+		out[k] = v
+	}
+	return out
 }
 
 func (s *TaskService) saveRecord(task *model.SignTask, runID int64, rec sign.Record, sequence int, counts map[string]int) {
@@ -954,32 +1048,37 @@ func (s *TaskService) saveRecord(task *model.SignTask, runID int64, rec sign.Rec
 	if status == "" {
 		status = "succeeded"
 	}
-	counts["total"]++
-	switch status {
-	case "succeeded":
-		counts["success"]++
-	case "already_done":
-		counts["already"]++
-	case "skipped":
-		counts["skipped"]++
-	case "failed":
-		counts["failed"]++
-	}
 	now := database.Now()
-	_, err := s.store.Write.Exec(`INSERT INTO TF_sign_records
+	message := nullableString(RedactString(truncate(rec.Message, 500)))
+	res, err := s.store.Write.Exec(`INSERT INTO TF_sign_records
 		(task_id, run_id, user_id, account_id, plugin_code, record_key, sequence_no, schema_version, action,
 		 target_type, target_id, target_name, status, result_code, message, reward_json, metrics_json,
 		 started_at, finished_at, created_at)
 		VALUES(?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?,?,?)
-		ON CONFLICT(run_id, record_key) DO UPDATE SET
-			status=excluded.status, result_code=excluded.result_code, message=excluded.message,
-			reward_json=excluded.reward_json, metrics_json=excluded.metrics_json, finished_at=excluded.finished_at`,
+		ON CONFLICT(run_id, record_key) DO NOTHING`,
 		task.ID, runID, task.UserID, task.AccountID, task.PluginCode, rec.Key, sequence, rec.Action,
 		nullableString(rec.TargetType), nullableString(rec.TargetID), nullableString(rec.TargetName),
-		status, nullableString(rec.Code), nullableString(RedactString(truncate(rec.Message, 500))),
+		status, nullableString(rec.Code), message,
 		jsonOrNil(rec.Rewards), jsonOrNil(rec.Metrics), now, now, now)
 	if err != nil {
 		s.logger.Warn("save record failed", slog.String("error", err.Error()), slog.String("key", rec.Key))
+	} else if affected, _ := res.RowsAffected(); affected == 1 {
+		counts["total"]++
+		switch status {
+		case "succeeded":
+			counts["success"]++
+		case "already_done":
+			counts["already"]++
+		case "skipped":
+			counts["skipped"]++
+		case "failed":
+			counts["failed"]++
+		}
+	} else {
+		_, _ = s.store.Write.Exec(`UPDATE TF_sign_records SET status=?, result_code=?, message=?,
+			reward_json=?, metrics_json=?, finished_at=?
+			WHERE run_id=? AND record_key=?`,
+			status, nullableString(rec.Code), message, jsonOrNil(rec.Rewards), jsonOrNil(rec.Metrics), now, runID, rec.Key)
 	}
 	_, _ = s.store.Write.Exec(`UPDATE TF_sign_tasks SET total_count=?, success_count=?, already_count=?,
 		skipped_count=?, failed_count=?, updated_at=? WHERE id=?`,

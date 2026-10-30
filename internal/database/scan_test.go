@@ -25,6 +25,10 @@ func TestMigrateAndMaps(t *testing.T) {
 	if tables < 20 {
 		t.Fatalf("应创建至少 20 张 TF_ 表，实际 %d", tables)
 	}
+	var version int
+	if err := store.Read.Get(&version, `SELECT MAX(version) FROM schema_migrations`); err != nil || version != 3 {
+		t.Fatalf("迁移版本应为 3，实际 %d (%v)", version, err)
+	}
 
 	var plugins int
 	if err := store.Read.Get(&plugins, `SELECT COUNT(1) FROM TF_plugins`); err != nil {
@@ -60,5 +64,39 @@ func TestMigrateAndMaps(t *testing.T) {
 	if _, err := store.Read.Exec(`INSERT INTO TF_users(username, username_norm, role, status, created_at, updated_at)
 		VALUES('u2','u2','user','active',?,?)`, Now(), Now()); err == nil {
 		t.Fatal("读池不应允许写入")
+	}
+}
+
+func TestMigrateAppliesPendingVersionedMigration(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "upgrade.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Write.Exec(`DROP TABLE TF_challenges`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Write.Exec(`DROP TABLE TF_login_failures`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Write.Exec(`DROP TABLE TF_rate_limits`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Write.Exec(`DELETE FROM schema_migrations WHERE version >= 2`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatalf("升级迁移失败: %v", err)
+	}
+	var version int
+	if err := store.Read.Get(&version, `SELECT MAX(version) FROM schema_migrations`); err != nil || version != 3 {
+		t.Fatalf("迁移版本应恢复为 3，实际 %d (%v)", version, err)
+	}
+	var tables int
+	if err := store.Read.Get(&tables, `SELECT COUNT(1) FROM sqlite_master WHERE type='table' AND name IN ('TF_challenges','TF_login_failures','TF_rate_limits')`); err != nil || tables != 3 {
+		t.Fatalf("增量迁移未创建共享状态表: %d (%v)", tables, err)
 	}
 }

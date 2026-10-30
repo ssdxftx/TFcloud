@@ -1,6 +1,7 @@
 package service
 
 import (
+	"crypto/subtle"
 	"fmt"
 	"net/url"
 	"os"
@@ -21,10 +22,13 @@ import (
 )
 
 type InstallService struct {
-	store    *database.Store
-	cfg      *config.Config
-	settings *SettingsService
-	mu       sync.Mutex
+	store     *database.Store
+	cfg       *config.Config
+	settings  *SettingsService
+	mu        sync.Mutex
+	tokenOnce sync.Once
+	token     string
+	tokenErr  error
 }
 
 func NewInstall(store *database.Store, cfg *config.Config, settings *SettingsService) *InstallService {
@@ -43,10 +47,14 @@ func (s *InstallService) Status() map[string]any {
 		"restart_hint": "安装完成后无需重启，配置即时生效",
 		"storage":      "sqlite",
 	}
+	out["install_token_required"] = !installed
 	if !installed {
-		// 安装完成后不再对外暴露服务器路径。
-		out["data_dir"] = s.cfg.DataDir
-		out["database_path"] = s.cfg.Database
+		var admins int
+		if err := s.store.Read.Get(&admins, `SELECT COUNT(1) FROM TF_users WHERE role = 'admin'`); err == nil && admins > 0 {
+			out["can_install"] = false
+			out["inconsistent"] = true
+			out["install_token_required"] = false
+		}
 	}
 	return out
 }
@@ -61,7 +69,7 @@ func (s *InstallService) Checks() map[string]any {
 	add("os", "操作系统", true, runtime.GOOS+"/"+runtime.GOARCH)
 
 	dataWritable := dirWritable(s.cfg.DataDir)
-	add("data_dir", "数据目录可写", dataWritable, s.cfg.DataDir)
+	add("data_dir", "数据目录可写", dataWritable, "安装程序可以写入数据目录")
 
 	dbOK := false
 	if err := s.store.Write.Ping(); err == nil {
@@ -70,7 +78,7 @@ func (s *InstallService) Checks() map[string]any {
 		dbOK = true
 		add("sqlite", "SQLite 内嵌数据库", true, "SQLite "+version)
 	} else {
-		add("sqlite", "SQLite 内嵌数据库", false, err.Error())
+		add("sqlite", "SQLite 内嵌数据库", false, "数据库连接失败")
 	}
 
 	freeMB := freeDiskMB(s.cfg.DataDir)
@@ -89,14 +97,13 @@ func (s *InstallService) TestStorage() map[string]any {
 	_ = s.store.Read.Get(&version, "SELECT sqlite_version()")
 	probe := filepath.Join(s.cfg.DataDir, ".write_probe")
 	if err := os.WriteFile(probe, []byte("ok"), 0o600); err != nil {
-		return map[string]any{"ok": false, "message": "数据目录不可写：" + err.Error()}
+		return map[string]any{"ok": false, "message": "数据目录不可写，请检查挂载权限"}
 	}
 	_ = os.Remove(probe)
 	return map[string]any{
 		"ok":             true,
 		"server_version": "SQLite " + version,
 		"message":        fmt.Sprintf("内嵌数据库可读写，可用空间 %d MB", freeDiskMB(s.cfg.DataDir)),
-		"database_path":  s.cfg.Database,
 		"mode":           "WAL",
 	}
 }
@@ -104,6 +111,7 @@ func (s *InstallService) TestStorage() map[string]any {
 type InstallInput struct {
 	SiteURL       string `json:"site_url"`
 	SessionSecure bool   `json:"session_secure"`
+	InstallToken  string `json:"install_token"`
 	Admin         struct {
 		Username    string `json:"username"`
 		Password    string `json:"password"`
@@ -117,6 +125,16 @@ func (s *InstallService) Run(in InstallInput) (map[string]any, error) {
 	defer s.mu.Unlock()
 	if s.cfg.IsInstalled() {
 		return nil, respond.NewError("ALREADY_INSTALLED", "站点已完成安装", 409)
+	}
+	if err := s.checkToken(in.InstallToken); err != nil {
+		return nil, err
+	}
+	var admins int
+	if err := s.store.Read.Get(&admins, `SELECT COUNT(1) FROM TF_users WHERE role = 'admin'`); err != nil {
+		return nil, respond.Internal("检查安装状态失败")
+	}
+	if admins > 0 {
+		return nil, respond.NewError("INSTALL_INCONSISTENT", "数据库里已有管理员，但安装标记缺失；请使用命令行恢复安装标记", 409)
 	}
 	siteURL, origin, scheme, err := normalizeSiteURL(in.SiteURL)
 	if err != nil {
@@ -194,15 +212,20 @@ func (s *InstallService) Run(in InstallInput) (map[string]any, error) {
 	defer func() { _ = tx.Rollback() }()
 
 	normalized := NormalizeIdentity(username)
-	if _, err := tx.Exec(`INSERT INTO TF_users
+	res, err := tx.Exec(`INSERT INTO TF_users
 		(username, username_norm, password_hash, display_name, role, status, daily_sign_email, push_channel,
 		 password_migrated_at, created_at, updated_at)
-		VALUES(?,?,?,?, 'admin', 'active', 0, 'none', ?,?,?)`,
-		username, normalized, hash, displayName, now, now, now); err != nil {
+		SELECT ?,?,?,?, 'admin', 'active', 0, 'none', ?,?,?
+		WHERE NOT EXISTS (SELECT 1 FROM TF_users WHERE role = 'admin')`,
+		username, normalized, hash, displayName, now, now, now)
+	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			return nil, respond.NewError("USER_FIELD_DUPLICATE", "管理员用户名已存在", 409)
 		}
 		return nil, respond.Internal("创建管理员失败")
+	}
+	if affected, _ := res.RowsAffected(); affected != 1 {
+		return nil, respond.NewError("INSTALL_INCONSISTENT", "数据库里已有管理员，无法重复安装", 409)
 	}
 	siteSettings := map[string]any{
 		"base_url":             siteURL,
@@ -224,8 +247,9 @@ func (s *InstallService) Run(in InstallInput) (map[string]any, error) {
 	marker := fmt.Sprintf(`{"installed_at":%q,"site_url":%q,"admin":%q,"version":1}`,
 		time.Now().Format(time.RFC3339), siteURL, username)
 	if err := os.WriteFile(s.cfg.InstalledMarker(), []byte(marker), 0o600); err != nil {
-		return nil, respond.Internal("写入安装标记失败：" + err.Error())
+		return nil, respond.Internal("写入安装标记失败，请检查数据目录权限")
 	}
+	_ = os.Remove(s.tokenPath())
 
 	return map[string]any{
 		"installed":      true,
@@ -242,6 +266,45 @@ func (s *InstallService) Run(in InstallInput) (map[string]any, error) {
 		"restart_required": false,
 		"message":          "安装完成，站点已就绪",
 	}, nil
+}
+
+func (s *InstallService) tokenPath() string {
+	return filepath.Join(s.cfg.DataDir, "install.token")
+}
+
+// Token 返回安装令牌。环境变量优先；未配置时在数据目录生成一次性令牌文件。
+// 安装完成后令牌文件会被删除，站点重启也不会重新生成。
+func (s *InstallService) Token() (string, error) {
+	s.tokenOnce.Do(func() {
+		if v := strings.TrimSpace(s.cfg.InstallToken); v != "" {
+			s.token = v
+			return
+		}
+		if data, err := os.ReadFile(s.tokenPath()); err == nil {
+			if v := strings.TrimSpace(string(data)); v != "" {
+				s.token = v
+				return
+			}
+		}
+		token := secure.RandomHex(16)
+		if err := os.WriteFile(s.tokenPath(), []byte(token+"\n"), 0o600); err != nil {
+			s.tokenErr = fmt.Errorf("生成安装令牌失败: %w", err)
+			return
+		}
+		s.token = token
+	})
+	return s.token, s.tokenErr
+}
+
+func (s *InstallService) checkToken(got string) error {
+	expected, err := s.Token()
+	if err != nil {
+		return respond.Internal("安装令牌不可用")
+	}
+	if subtle.ConstantTimeCompare([]byte(strings.TrimSpace(got)), []byte(expected)) != 1 {
+		return respond.NewError("INSTALL_TOKEN_INVALID", "安装令牌不正确", 403)
+	}
+	return nil
 }
 
 // normalizeSiteURL 校验安装时填写的站点地址，并返回用于配置的 origin。

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/mail"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -135,6 +136,10 @@ func (m *MailService) SendTransactional(recipient, subject, html, text, template
 	taskNo := secure.RandomHex(16)
 	messageNo := secure.RandomHex(16)
 	lower := strings.ToLower(recipient)
+	storedHTML := html
+	if strings.HasSuffix(templateCode, "_code") {
+		storedHTML = sixDigitPattern.ReplaceAllString(storedHTML, "******")
+	}
 	res, err := m.store.Write.Exec(`INSERT INTO TF_mail_tasks
 		(task_no, user_id, template_code, subject, status, priority, total_count, success_count, failed_count,
 		 scheduled_at, started_at, created_at, updated_at)
@@ -147,7 +152,7 @@ func (m *MailService) SendTransactional(recipient, subject, html, text, template
 	rec, err := m.store.Write.Exec(`INSERT INTO TF_mail_records
 		(task_id, message_no, recipient, recipient_hash, subject, body_html, status, attempts, max_attempts, available_at, created_at, updated_at)
 		VALUES(?,?,?,?,?,?, 'sending', 1, 1, ?,?,?)`,
-		taskID, messageNo, lower, secure.SHA256Hex(lower), truncate(subject, 255), html, now, now, now)
+		taskID, messageNo, lower, secure.SHA256Hex(lower), truncate(subject, 255), storedHTML, now, now, now)
 	if err != nil {
 		return respond.Internal("写入邮件记录失败")
 	}
@@ -160,7 +165,7 @@ func (m *MailService) SendTransactional(recipient, subject, html, text, template
 		_, _ = m.store.Write.Exec(`UPDATE TF_mail_tasks SET status='failed', failed_count=1, finished_at=?, updated_at=? WHERE id=?`,
 			database.Now(), database.Now(), taskID)
 		m.logger.Error("smtp send failed", slog.String("error", sendErr.Error()), slog.String("template", templateCode))
-		return respond.NewError("MAIL_SEND_FAILED", "邮件发送失败："+sendErr.Error(), 502)
+		return respond.NewError("MAIL_SEND_FAILED", "邮件发送失败，请稍后重试或联系管理员", 502)
 	}
 	now2 := database.Now()
 	_, _ = m.store.Write.Exec(`UPDATE TF_mail_records SET status='sent', provider_message_id=?, sent_at=?, updated_at=? WHERE id=?`,
@@ -682,6 +687,8 @@ func (m *MailService) RecoverStaleSending(olderThan time.Duration, limit int) in
 	}
 	return int(n)
 }
+
+var sixDigitPattern = regexp.MustCompile(`\b\d{6}\b`)
 
 func mailBodyForStorage(html, text string) string {
 	if strings.TrimSpace(html) != "" {

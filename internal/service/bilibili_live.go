@@ -122,58 +122,60 @@ type liveMedal struct {
 
 func (s *LiveService) discover(ctx context.Context, creds map[string]any) ([]liveMedal, error) {
 	mid := sign.ValueString(creds["dede_user_id"])
-	resp, err := s.http.Get(ctx, "https://api.live.bilibili.com/xlive/web-ucenter/user/MedalWall", sign.RequestOptions{
-		Query:   url.Values{"target_id": {mid}, "page": {"1"}, "page_size": {"50"}},
-		Cookie:  s.bilibiliCookie(creds),
-		Referer: "https://live.bilibili.com/",
-		Headers: map[string]string{"Origin": "https://live.bilibili.com", "User-Agent": "Mozilla/5.0"},
-	})
-	if err != nil {
-		return nil, err
-	}
-	if liveUpstreamUnavailable(resp) {
-		return nil, sign.Fail("UPSTREAM_REQUEST_FAILED", "获取粉丝牌列表失败：上游服务暂时不可用", 502)
-	}
-	if resp.JSON == nil {
-		return nil, sign.Fail("BILIBILI_RESPONSE_INVALID", "获取粉丝牌列表失败：响应格式错误", 502)
-	}
-	code := sign.ValueInt(resp.JSON["code"])
-	if code == -101 {
-		return nil, sign.Fail("PLUGIN_CREDENTIAL_EXPIRED", "哔哩哔哩登录状态已经失效", 422)
-	}
-	if code != 0 {
-		return nil, sign.Fail("BILIBILI_MEDAL_FAILED", firstText(resp.JSON["message"], "获取粉丝牌列表失败"), 502)
-	}
-	data := sign.Map(resp.JSON["data"])
-	list := sign.Slice(data["list"])
-	out := make([]liveMedal, 0, len(list))
-	for _, item := range list {
-		m := sign.Map(item)
-		if m == nil {
-			continue
-		}
-		medal := sign.Map(m["medal"])
-		roomID := sign.ValueInt(firstNonNil(m["room_id"], m["roomid"]))
-		if roomID == 0 && medal != nil {
-			roomID = sign.ValueInt(medal["room_id"])
-		}
-		if roomID == 0 {
-			continue
-		}
-		ruid := sign.ValueInt(firstNonNil(m["target_id"], m["uid"]))
-		if ruid == 0 && medal != nil {
-			ruid = sign.ValueInt(medal["target_id"])
-		}
-		out = append(out, liveMedal{
-			RoomID:     int64(roomID),
-			RUID:       int64(ruid),
-			MedalName:  firstText(medal["medal_name"], m["medal_name"]),
-			MedalLevel: sign.ValueInt(firstNonNil(m["level"], medal["level"])),
-			RoomName:   firstText(m["room_name"], medal["anchor_uname"]),
+	out := make([]liveMedal, 0, 50)
+	for page := 1; page <= 20; page++ {
+		resp, err := s.http.Get(ctx, "https://api.live.bilibili.com/xlive/web-ucenter/user/MedalWall", sign.RequestOptions{
+			Query:   url.Values{"target_id": {mid}, "page": {strconv.Itoa(page)}, "page_size": {"50"}},
+			Cookie:  s.bilibiliCookie(creds),
+			Referer: "https://live.bilibili.com/",
+			Headers: map[string]string{"Origin": "https://live.bilibili.com", "User-Agent": "Mozilla/5.0"},
 		})
-	}
-	if len(out) == 0 {
-		return nil, sign.Fail("BILIBILI_MEDAL_EMPTY", "当前账号没有可挂机的粉丝牌", 422)
+		if err != nil {
+			return nil, err
+		}
+		if liveUpstreamUnavailable(resp) {
+			return nil, sign.Fail("UPSTREAM_REQUEST_FAILED", "获取粉丝牌列表失败：上游服务暂时不可用", 502)
+		}
+		if resp.JSON == nil {
+			return nil, sign.Fail("BILIBILI_RESPONSE_INVALID", "获取粉丝牌列表失败：响应格式错误", 502)
+		}
+		code := sign.ValueInt(resp.JSON["code"])
+		if code == -101 {
+			return nil, sign.Fail("PLUGIN_CREDENTIAL_EXPIRED", "哔哩哔哩登录状态已经失效", 422)
+		}
+		if code != 0 {
+			return nil, sign.Fail("BILIBILI_MEDAL_FAILED", firstText(resp.JSON["message"], "获取粉丝牌列表失败"), 502)
+		}
+		data := sign.Map(resp.JSON["data"])
+		list := sign.Slice(data["list"])
+		for _, item := range list {
+			m := sign.Map(item)
+			if m == nil {
+				continue
+			}
+			medal := sign.Map(m["medal"])
+			roomID := sign.ValueInt(firstNonNil(m["room_id"], m["roomid"]))
+			if roomID == 0 && medal != nil {
+				roomID = sign.ValueInt(medal["room_id"])
+			}
+			if roomID == 0 {
+				continue
+			}
+			ruid := sign.ValueInt(firstNonNil(m["target_id"], m["uid"]))
+			if ruid == 0 && medal != nil {
+				ruid = sign.ValueInt(medal["target_id"])
+			}
+			out = append(out, liveMedal{
+				RoomID:     int64(roomID),
+				RUID:       int64(ruid),
+				MedalName:  firstText(medal["medal_name"], m["medal_name"]),
+				MedalLevel: sign.ValueInt(firstNonNil(m["level"], medal["level"])),
+				RoomName:   firstText(m["room_name"], medal["anchor_uname"]),
+			})
+		}
+		if len(list) < 50 {
+			break
+		}
 	}
 	return out, nil
 }
@@ -318,6 +320,15 @@ func (s *LiveService) roomInfo(ctx context.Context, creds map[string]any, roomID
 
 // RunSession 执行一次完整的挂机任务（由 live worker 调用）。
 func (s *LiveService) RunSession(ctx context.Context, task *model.SignTask, workerID string) {
+	if s.tasks != nil {
+		var done func()
+		ctx, done = s.tasks.registerRunCancel(ctx, task.ID)
+		defer done()
+	}
+	var currentStatus string
+	if err := s.store.Read.Get(&currentStatus, `SELECT status FROM TF_sign_tasks WHERE id=?`, task.ID); err != nil || currentStatus != "running" {
+		return
+	}
 	started := time.Now()
 	runID, err := s.startRun(task, workerID, started)
 	if err != nil {
@@ -432,6 +443,13 @@ func (s *LiveService) RunSession(ctx context.Context, task *model.SignTask, work
 			}
 			s.updateRoom(roomRowID, map[string]any{"status": "failed", "last_error_code": errorCode(err),
 				"last_error_message": truncate(err.Error(), 500), "next_heartbeat_at": nil, "finished_at": database.Now()})
+			if liveCredentialCode != "" {
+				if remaining := len(medals) - idx - 1; remaining > 0 {
+					failedRooms += remaining
+					failures = append(failures, fmt.Sprintf("凭据失效，剩余 %d 个直播间未处理", remaining))
+				}
+				break
+			}
 			if failedRooms >= maxFailures {
 				remaining := len(medals) - idx - 1
 				if remaining > 0 {
@@ -481,6 +499,13 @@ func (s *LiveService) RunSession(ctx context.Context, task *model.SignTask, work
 		}
 		s.updateRoom(roomRowID, map[string]any{"status": status, "heartbeat_count": count,
 			"next_heartbeat_at": nil, "finished_at": database.Now()})
+		if liveCredentialCode != "" {
+			if remaining := len(medals) - idx - 1; remaining > 0 {
+				failedRooms += remaining
+				failures = append(failures, fmt.Sprintf("凭据失效，剩余 %d 个直播间未处理", remaining))
+			}
+			break
+		}
 		switch {
 		case count >= target:
 			completedRooms++
@@ -623,9 +648,19 @@ func (s *LiveService) finish(task *model.SignTask, sessionID *int64, runID int64
 		errCode = firstNonEmpty(code, "BILIBILI_LIVE_FAILED")
 		errMsg = truncate(message, 500)
 	}
-	_, _ = tx.Exec(`UPDATE TF_sign_tasks SET status=?, total_count=?, success_count=?, already_count=?, failed_count=?,
-		last_error_code=?, last_error_message=?, locked_at=NULL, locked_by=NULL, finished_at=?, updated_at=? WHERE id=?`,
-		runStatus, total, success, already, failed, errCode, errMsg, finished, finished, task.ID)
+	res, err := tx.Exec(`UPDATE TF_sign_tasks SET status=?, total_count=?, success_count=?, already_count=?, failed_count=?,
+		last_error_code=?, last_error_message=?, locked_at=NULL, locked_by=NULL, finished_at=?, updated_at=?
+		WHERE id=? AND status='running' AND locked_by=?`,
+		runStatus, total, success, already, failed, errCode, errMsg, finished, finished, task.ID, deref(task.LockedBy))
+	if err != nil {
+		return
+	}
+	if affected, _ := res.RowsAffected(); affected != 1 {
+		if s.tasks != nil {
+			s.tasks.markRunLockLost(tx, runID)
+		}
+		return
+	}
 	_, _ = tx.Exec(`UPDATE TF_plugin_accounts SET last_run_at=?, last_error_code=?, last_error_message=?,
 		status=CASE WHEN ? THEN 'credential_expired' ELSE status END, updated_at=? WHERE id=?`,
 		finished, errCode, errMsg, status != "succeeded" && isCredentialFailureCode(code), finished, task.AccountID)

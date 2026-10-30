@@ -2,6 +2,8 @@ package middleware
 
 import (
 	"context"
+	"crypto/hmac"
+	"encoding/hex"
 	"log/slog"
 	"net"
 	"net/http"
@@ -10,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"tfcloud/internal/database"
 	"tfcloud/internal/httpapi/respond"
 	"tfcloud/internal/secure"
 )
@@ -53,7 +56,10 @@ type Authenticator interface {
 	Authenticate(rawToken string, ip string) (*Principal, error)
 }
 
-const SessionCookie = "tf_sign_token"
+const (
+	SessionCookie = "tf_sign_token"
+	CSRFCookie    = "tf_csrf"
+)
 
 // ExtractToken 优先 Bearer，其次 Cookie，与原实现一致。
 func ExtractToken(r *http.Request) string {
@@ -92,6 +98,8 @@ func RequestID() func(http.Handler) http.Handler {
 			id := r.Header.Get("X-Request-Id")
 			if len(id) != 32 {
 				id = secure.RandomHex(16)
+			} else if _, err := hex.DecodeString(id); err != nil {
+				id = secure.RandomHex(16)
 			}
 			w.Header().Set("X-Request-Id", id)
 			next.ServeHTTP(w, r.WithContext(respond.WithRequestID(r.Context(), id)))
@@ -124,7 +132,7 @@ func (m *Middleware) CORSHandler(next http.Handler) http.Handler {
 				if credentials {
 					w.Header().Set("Access-Control-Allow-Credentials", "true")
 				}
-				w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Request-Id, X-Auth-Token, Accept")
+				w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Request-Id, X-Auth-Token, X-CSRF-Token, Accept")
 				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS")
 				w.Header().Set("Access-Control-Expose-Headers", "X-Request-Id")
 				w.Header().Set("Access-Control-Max-Age", "86400")
@@ -163,10 +171,70 @@ func SecurityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		h.Set("Content-Security-Policy", "frame-ancestors 'none'; base-uri 'self'; object-src 'none'")
+		h.Set("Strict-Transport-Security", "max-age=31536000")
 		next.ServeHTTP(w, r)
 	})
+}
+
+// CSRF 使用双提交 Cookie：前端从非 HttpOnly Cookie 读取令牌并放入 X-CSRF-Token。
+func CSRF(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		token := ""
+		if c, err := r.Cookie(CSRFCookie); err == nil {
+			token = c.Value
+		}
+		if len(token) != 32 {
+			token = secure.RandomHex(16)
+			secureCookie := r.TLS != nil || strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https")
+			http.SetCookie(w, &http.Cookie{
+				Name:     CSRFCookie,
+				Value:    token,
+				Path:     "/",
+				Secure:   secureCookie,
+				SameSite: http.SameSiteLaxMode,
+				MaxAge:   30 * 24 * 60 * 60,
+			})
+		}
+		if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions || csrfExempt(r.URL.Path) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// Bearer/X-Auth-Token 由调用方显式携带，不存在浏览器自动附带，不需要 CSRF。
+		if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") || r.Header.Get("X-Auth-Token") != "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		provided := strings.TrimSpace(r.Header.Get("X-CSRF-Token"))
+		if provided == "" || !hmac.Equal([]byte(provided), []byte(token)) {
+			respond.Fail(w, r, respond.NewError("CSRF_TOKEN_INVALID", "请求校验失败，请刷新页面后重试", 403))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func csrfExempt(path string) bool {
+	switch {
+	case path == "/api/install" || strings.HasPrefix(path, "/api/install/"):
+		return true
+	case path == "/api/auth/login", path == "/api/auth/login/email", path == "/api/auth/login/email-code",
+		path == "/api/auth/register", path == "/api/auth/register/email-code", path == "/api/auth/logout",
+		path == "/api/auth/password/forgot", path == "/api/auth/password/reset",
+		path == "/api/auth/human-challenge", path == "/api/auth/human-challenge/verify":
+		return true
+	case strings.HasPrefix(path, "/api/auth/qq/"):
+		return true
+	default:
+		return false
+	}
 }
 
 // InstallGuard 在未安装时把除安装接口外的请求挡在门外。
@@ -327,51 +395,35 @@ func isTrustedProxy(host string) bool {
 
 // RateLimiter 是进程内的固定窗口限流，用于登录/验证码等敏感接口。
 type RateLimiter struct {
-	mu      sync.Mutex
-	window  time.Duration
-	limit   int
-	buckets map[string]*bucket
+	store  *database.Store
+	window time.Duration
+	limit  int
 }
 
-type bucket struct {
-	count int
-	reset time.Time
+func NewRateLimiter(store *database.Store, limit int, window time.Duration) *RateLimiter {
+	return &RateLimiter{store: store, limit: limit, window: window}
 }
-
-func NewRateLimiter(limit int, window time.Duration) *RateLimiter {
-	return &RateLimiter{limit: limit, window: window, buckets: make(map[string]*bucket)}
-}
-
-const maxRateLimitBuckets = 20000
 
 func (l *RateLimiter) Allow(key string) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	now := time.Now()
-	b, ok := l.buckets[key]
-	if !ok || now.After(b.reset) {
-		if len(l.buckets) >= maxRateLimitBuckets {
-			for k, v := range l.buckets {
-				if now.After(v.reset) {
-					delete(l.buckets, k)
-				}
-			}
-			// 仍然满载时淘汰约 10% 的旧桶，避免伪造 IP 无限撑大内存。
-			for k := range l.buckets {
-				delete(l.buckets, k)
-				if len(l.buckets) < maxRateLimitBuckets*9/10 {
-					break
-				}
-			}
-		}
-		l.buckets[key] = &bucket{count: 1, reset: now.Add(l.window)}
+	if l.store == nil {
 		return true
 	}
-	if b.count >= l.limit {
-		return false
+	now := time.Now()
+	reset := database.Ts(now.Add(l.window))
+	var count int
+	err := l.store.Write.Get(&count, `INSERT INTO TF_rate_limits(scope_key, count, reset_at, updated_at)
+		VALUES(?, 1, ?, ?)
+		ON CONFLICT(scope_key) DO UPDATE SET
+			count = CASE WHEN TF_rate_limits.reset_at <= ? THEN 1 ELSE TF_rate_limits.count + 1 END,
+			reset_at = CASE WHEN TF_rate_limits.reset_at <= ? THEN excluded.reset_at ELSE TF_rate_limits.reset_at END,
+			updated_at = excluded.updated_at
+		RETURNING count`,
+		key, reset, database.Now(), database.Now(), database.Now())
+	if err != nil {
+		// 数据库异常时优先保证可用性；认证本身会继续做账号/密码校验。
+		return true
 	}
-	b.count++
-	return true
+	return count <= l.limit
 }
 
 // Limit 返回按 IP + scope 限流的中间件。

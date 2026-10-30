@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
-	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -42,7 +41,7 @@ type AuthService struct {
 }
 
 func NewAuth(store *database.Store, cfg *config.Config, settings *SettingsService, mail *MailService) *AuthService {
-	return &AuthService{store: store, cfg: cfg, settings: settings, mail: mail, challenge: newChallengeStore()}
+	return &AuthService{store: store, cfg: cfg, settings: settings, mail: mail, challenge: newChallengeStore(store)}
 }
 
 // ---------- 归一化 ----------
@@ -179,7 +178,7 @@ func (s *AuthService) Register(in RegisterInput, ip, ua string) (map[string]any,
 	}
 
 	site := s.settings.Group("site")
-	if truthy(site["registration_enabled"]) == false {
+	if !truthy(site["registration_enabled"]) {
 		return nil, respond.NewError("REGISTRATION_DISABLED", "站点已关闭注册", 403)
 	}
 
@@ -195,7 +194,10 @@ func (s *AuthService) Register(in RegisterInput, ip, ua string) (map[string]any,
 		return nil, respond.NewError("USER_FIELD_DUPLICATE", "邮箱已被使用", 409)
 	}
 
-	if truthy(site["registration_email_verification"]) && truthy(s.settings.Group("mail")["enabled"]) {
+	if truthy(site["registration_email_verification"]) {
+		if !truthy(s.settings.Group("mail")["enabled"]) {
+			return nil, respond.NewError("REGISTRATION_EMAIL_VERIFICATION_UNAVAILABLE", "注册邮箱验证已开启，但邮件服务未配置", 409)
+		}
 		if err := s.ConsumeEmailCode(email, strings.TrimSpace(in.EmailCode), "register"); err != nil {
 			return nil, err
 		}
@@ -223,6 +225,10 @@ func (s *AuthService) Register(in RegisterInput, ip, ua string) (map[string]any,
 
 func (s *AuthService) Login(account, password, ip, ua string) (map[string]any, error) {
 	account = strings.TrimSpace(account)
+	loginKey := NormalizeIdentity(account)
+	if !s.loginAllowed(loginKey) {
+		return nil, respond.NewError("AUTH_ACCOUNT_LOCKED", "登录尝试过多，请 15 分钟后再试", 429)
+	}
 	var user model.User
 	var err error
 	if validEmail(account) {
@@ -231,8 +237,10 @@ func (s *AuthService) Login(account, password, ip, ua string) (map[string]any, e
 		err = s.store.Read.Get(&user, `SELECT * FROM TF_users WHERE username_norm = ?`, NormalizeIdentity(account))
 	}
 	if err != nil || user.Status != "active" || !s.verifyPassword(password, user.PasswordHash) {
+		s.recordLoginFailure(loginKey)
 		return nil, respond.NewError("AUTH_INVALID_CREDENTIALS", "账号或密码错误", 401)
 	}
+	s.clearLoginFailures(loginKey)
 	now := database.Now()
 	stored := ""
 	if user.PasswordHash != nil {
@@ -245,6 +253,75 @@ func (s *AuthService) Login(account, password, ip, ua string) (map[string]any, e
 		}
 	}
 	return s.issueSession(user.ID, ip, ua, now)
+}
+
+const (
+	loginFailureWindow = 15 * time.Minute
+	loginFailureLimit  = 5
+)
+
+func (s *AuthService) loginAllowed(key string) bool {
+	var row struct {
+		Failures        int     `db:"failures"`
+		WindowStartedAt string  `db:"window_started_at"`
+		LockedUntil     *string `db:"locked_until"`
+	}
+	if err := s.store.Read.Get(&row, `SELECT failures, window_started_at, locked_until
+		FROM TF_login_failures WHERE login_key = ?`, key); err != nil {
+		return true
+	}
+	now := time.Now()
+	if row.LockedUntil != nil {
+		if until, ok := database.Parse(*row.LockedUntil); ok && now.Before(until) {
+			return false
+		}
+	}
+	window, ok := database.Parse(row.WindowStartedAt)
+	if !ok || now.Sub(window) > loginFailureWindow {
+		_, _ = s.store.Write.Exec(`DELETE FROM TF_login_failures WHERE login_key = ?`, key)
+		return true
+	}
+	return row.Failures < loginFailureLimit
+}
+
+func (s *AuthService) recordLoginFailure(key string) {
+	tx, err := s.store.Write.Beginx()
+	if err != nil {
+		return
+	}
+	defer func() { _ = tx.Rollback() }()
+	var row struct {
+		Failures        int     `db:"failures"`
+		WindowStartedAt string  `db:"window_started_at"`
+		LockedUntil     *string `db:"locked_until"`
+	}
+	now := time.Now()
+	failures := 1
+	windowStarted := now
+	if err := tx.Get(&row, `SELECT failures, window_started_at, locked_until
+		FROM TF_login_failures WHERE login_key = ?`, key); err == nil {
+		if started, ok := database.Parse(row.WindowStartedAt); ok && now.Sub(started) <= loginFailureWindow {
+			failures = row.Failures + 1
+			windowStarted = started
+		}
+	}
+	var locked any
+	if failures >= loginFailureLimit {
+		locked = database.Ts(now.Add(loginFailureWindow))
+	}
+	_, err = tx.Exec(`INSERT INTO TF_login_failures(login_key, failures, window_started_at, locked_until, updated_at)
+		VALUES(?,?,?,?,?) ON CONFLICT(login_key) DO UPDATE SET
+		failures=excluded.failures, window_started_at=excluded.window_started_at,
+		locked_until=excluded.locked_until, updated_at=excluded.updated_at`,
+		key, failures, database.Ts(windowStarted), locked, database.Now())
+	if err != nil {
+		return
+	}
+	_ = tx.Commit()
+}
+
+func (s *AuthService) clearLoginFailures(key string) {
+	_, _ = s.store.Write.Exec(`DELETE FROM TF_login_failures WHERE login_key = ?`, key)
 }
 
 func (s *AuthService) verifyPassword(password string, stored *string) bool {
@@ -396,7 +473,7 @@ func (s *AuthService) PublicUser(userID int64) (map[string]any, error) {
 	}, nil
 }
 
-func (s *AuthService) UpdateProfile(userID int64, input map[string]any) (map[string]any, error) {
+func (s *AuthService) UpdateProfile(userID int64, input map[string]any, currentToken string) (map[string]any, error) {
 	var user model.User
 	if err := s.store.Read.Get(&user, `SELECT * FROM TF_users WHERE id = ?`, userID); err != nil {
 		return nil, respond.NotFound("用户不存在")
@@ -414,11 +491,22 @@ func (s *AuthService) UpdateProfile(userID int64, input map[string]any) (map[str
 		if len(value) > 191 {
 			return nil, respond.NewError("VALIDATION_FAILED", "邮箱过长", 422)
 		}
-		if value != currentEmail && currentEmail != "" {
-			if truthy(s.settings.Group("mail")["enabled"]) {
+		if value != currentEmail {
+			mailEnabled := truthy(s.settings.Group("mail")["enabled"])
+			switch {
+			case currentEmail != "" && mailEnabled:
 				code := strings.TrimSpace(str(input["current_email_code"]))
 				if err := s.ConsumeEmailCode(currentEmail, code, "change_email"); err != nil {
 					return nil, err
+				}
+			default:
+				// 首次绑定邮箱或邮件服务不可用时，用当前密码证明身份。
+				password := str(input["current_password"])
+				if !s.verifyPassword(password, user.PasswordHash) {
+					if user.PasswordHash == nil || *user.PasswordHash == "" {
+						return nil, respond.NewError("EMAIL_BINDING_REQUIRES_ADMIN", "当前账号尚未设置密码，请联系管理员绑定邮箱", 422)
+					}
+					return nil, respond.NewError("CURRENT_PASSWORD_INVALID", "当前密码不正确", 422)
 				}
 			}
 		}
@@ -497,7 +585,23 @@ func (s *AuthService) UpdateProfile(userID int64, input map[string]any) (map[str
 		}
 		return nil, respond.Internal("保存资料失败")
 	}
+	if _, changed := input["email"]; changed {
+		if strings.ToLower(strings.TrimSpace(str(input["email"]))) != currentEmail {
+			_ = s.revokeOtherSessions(userID, currentToken)
+		}
+	}
 	return s.PublicUser(userID)
+}
+
+func (s *AuthService) revokeOtherSessions(userID int64, currentToken string) error {
+	now := database.Now()
+	if strings.TrimSpace(currentToken) == "" {
+		_, err := s.store.Write.Exec(`UPDATE TF_sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL`, now, userID)
+		return err
+	}
+	_, err := s.store.Write.Exec(`UPDATE TF_sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL AND token_hash<>?`,
+		now, userID, secure.SHA256Hex(currentToken))
+	return err
 }
 
 // ---------- 邮箱验证码 ----------
@@ -933,6 +1037,7 @@ func greetingFor(purpose string) string {
 type challengeRecord struct {
 	IDHash     string
 	Purpose    string
+	Answer     string
 	IssuedAt   time.Time
 	ExpiresAt  time.Time
 	VerifiedAt time.Time
@@ -942,124 +1047,137 @@ type challengeRecord struct {
 }
 
 type challengeStore struct {
-	mu   sync.Mutex
-	data map[string]*challengeRecord
+	store *database.Store
 }
 
-func newChallengeStore() *challengeStore {
-	return &challengeStore{data: make(map[string]*challengeRecord)}
+func newChallengeStore(store *database.Store) *challengeStore {
+	return &challengeStore{store: store}
 }
 
-const maxChallenges = 20000
-
-func (c *challengeStore) put(id string, rec *challengeRecord) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if len(c.data) >= maxChallenges {
-		now := time.Now()
-		for k, v := range c.data {
-			if now.After(v.ExpiresAt) {
-				delete(c.data, k)
-			}
-		}
-		// 一次性淘汰约 10%，避免每新增一个挑战都全表扫描。
-		for k := range c.data {
-			delete(c.data, k)
-			if len(c.data) < maxChallenges*9/10 {
-				break
-			}
-		}
-	}
-	c.data[id] = rec
+func (c *challengeStore) put(id string, rec *challengeRecord) error {
+	_, err := c.store.Write.Exec(`INSERT INTO TF_challenges
+		(id, id_hash, purpose, answer, issued_at, expires_at, verified_at, attempts, ip_hash, agent_hash, created_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		id, rec.IDHash, rec.Purpose, rec.Answer, database.Ts(rec.IssuedAt), database.Ts(rec.ExpiresAt),
+		nilTime(rec.VerifiedAt), rec.Attempts, rec.IPHash, rec.AgentHash, database.Now())
+	return err
 }
 
-// snapshot 返回副本，避免调用方在锁外修改记录造成数据竞争。
+// snapshot 返回挑战副本，调用方在锁外读取不会与数据库更新互相干扰。
 func (c *challengeStore) snapshot(id string) (challengeRecord, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	rec, ok := c.data[id]
+	var row struct {
+		IDHash     string  `db:"id_hash"`
+		Purpose    string  `db:"purpose"`
+		Answer     string  `db:"answer"`
+		IssuedAt   string  `db:"issued_at"`
+		ExpiresAt  string  `db:"expires_at"`
+		VerifiedAt *string `db:"verified_at"`
+		Attempts   int     `db:"attempts"`
+		IPHash     string  `db:"ip_hash"`
+		AgentHash  string  `db:"agent_hash"`
+	}
+	if err := c.store.Read.Get(&row, `SELECT id_hash, purpose, answer, issued_at, expires_at, verified_at,
+		attempts, ip_hash, agent_hash FROM TF_challenges WHERE id = ?`, id); err != nil {
+		return challengeRecord{}, false
+	}
+	issued, ok := database.Parse(row.IssuedAt)
 	if !ok {
 		return challengeRecord{}, false
 	}
-	return *rec, true
+	expires, ok := database.Parse(row.ExpiresAt)
+	if !ok {
+		return challengeRecord{}, false
+	}
+	rec := challengeRecord{
+		IDHash: row.IDHash, Purpose: row.Purpose, Answer: row.Answer, IssuedAt: issued, ExpiresAt: expires,
+		Attempts: row.Attempts, IPHash: row.IPHash, AgentHash: row.AgentHash,
+	}
+	if row.VerifiedAt != nil {
+		if t, ok := database.Parse(*row.VerifiedAt); ok {
+			rec.VerifiedAt = t
+		}
+	}
+	return rec, true
 }
 
 func (c *challengeStore) markVerified(id string) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	rec, ok := c.data[id]
-	if !ok {
+	res, err := c.store.Write.Exec(`UPDATE TF_challenges SET verified_at = ?
+		WHERE id = ? AND verified_at IS NULL AND expires_at > ?`, database.Now(), id, database.Now())
+	if err != nil {
 		return false
 	}
-	rec.VerifiedAt = time.Now()
-	return true
+	affected, _ := res.RowsAffected()
+	return affected == 1
 }
 
 func (c *challengeStore) failAttempt(id string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	rec, ok := c.data[id]
-	if !ok {
+	tx, err := c.store.Write.Beginx()
+	if err != nil {
 		return
 	}
-	rec.Attempts++
-	if rec.Attempts >= 5 {
-		delete(c.data, id)
-	}
+	defer func() { _ = tx.Rollback() }()
+	_, _ = tx.Exec(`UPDATE TF_challenges SET attempts = attempts + 1 WHERE id = ?`, id)
+	_, _ = tx.Exec(`DELETE FROM TF_challenges WHERE id = ? AND attempts >= 5`, id)
+	_ = tx.Commit()
 }
 
 func (c *challengeStore) consume(id, purpose, agentHash string, now time.Time) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	rec, ok := c.data[id]
-	if !ok {
+	cutoff := database.Ts(now.Add(-verifiedTTL))
+	res, err := c.store.Write.Exec(`DELETE FROM TF_challenges
+		WHERE id = ? AND purpose = ? AND agent_hash = ? AND verified_at IS NOT NULL
+		  AND verified_at >= ? AND expires_at > ?`,
+		id, purpose, agentHash, cutoff, database.Ts(now))
+	if err != nil {
 		return false
 	}
-	if rec.Purpose != purpose || rec.VerifiedAt.IsZero() ||
-		now.Sub(rec.VerifiedAt) > verifiedTTL || rec.AgentHash != agentHash {
-		return false
-	}
-	delete(c.data, id)
-	return true
+	affected, _ := res.RowsAffected()
+	return affected == 1
 }
 
 func (c *challengeStore) remove(id string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	delete(c.data, id)
+	_, _ = c.store.Write.Exec(`DELETE FROM TF_challenges WHERE id = ?`, id)
 }
 
 const (
-	challengeTTL     = 300 * time.Second
-	verifiedTTL      = 120 * time.Second
-	minInteractionMs = 300
+	challengeTTL   = 300 * time.Second
+	verifiedTTL    = 120 * time.Second
+	minChallengeMs = 300
 )
+
+func nilTime(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return database.Ts(t)
+}
 
 func (s *AuthService) IssueChallenge(purpose, ip, agent string) (map[string]any, error) {
 	if !contains([]string{"login", "register"}, purpose) {
 		return nil, respond.NewError("VALIDATION_FAILED", "人机验证用途无效", 422)
 	}
+	answer := captchaCode(captchaLength)
 	id := secure.RandomHex(16)
-	s.challenge.put(id, &challengeRecord{
+	if err := s.challenge.put(id, &challengeRecord{
 		IDHash:    secure.SHA256Hex(id),
 		Purpose:   purpose,
+		Answer:    answer,
 		IssuedAt:  time.Now(),
 		ExpiresAt: time.Now().Add(challengeTTL),
 		IPHash:    secure.SHA256Hex(ip),
 		AgentHash: secure.SHA256Hex(agent),
-	})
+	}); err != nil {
+		return nil, respond.Internal("创建人机验证失败")
+	}
 	return map[string]any{
-		"challenge_id":           id,
-		"expires_in":             int(challengeTTL.Seconds()),
-		"minimum_interaction_ms": minInteractionMs,
+		"challenge_id":  id,
+		"expires_in":    int(challengeTTL.Seconds()),
+		"captcha_image": captchaImage(answer),
 	}, nil
 }
 
-// 说明：挑战只绑定「ID + UA」，不再强绑定 IP。
-// 反代/CDN 后面出口 IP 会随连接变化（Cloudflare 隧道、移动网络、CGNAT），
-// 强绑定会让正常用户反复失败；滑块的时间与交互次数校验 + 一次性 ID 已足以拦机器人。
-// IP 仍会记录在挑战里，供审计与风控排查。
-func (s *AuthService) VerifyChallenge(id string, elapsedMs, interactionCount int, ip, agent string) (map[string]any, error) {
+// 说明：挑战绑定「ID + UA」，验证码答案只保存在服务端内存中。
+// 反代/CDN 后面出口 IP 会随连接变化，因此不强制绑定 IP；IP 仍会记录供风控排查。
+func (s *AuthService) VerifyChallenge(id, answer, ip, agent string) (map[string]any, error) {
 	rec, ok := s.challenge.snapshot(id)
 	if !ok || time.Now().After(rec.ExpiresAt) ||
 		!hmac.Equal([]byte(rec.IDHash), []byte(secure.SHA256Hex(id))) ||
@@ -1068,11 +1186,14 @@ func (s *AuthService) VerifyChallenge(id string, elapsedMs, interactionCount int
 		return nil, respond.NewError("HUMAN_CHALLENGE_EXPIRED", "验证已过期，请重试", 422)
 	}
 	serverElapsed := time.Since(rec.IssuedAt).Milliseconds()
-	valid := elapsedMs >= minInteractionMs && elapsedMs <= 120000 &&
-		serverElapsed >= minInteractionMs && interactionCount >= 2 && interactionCount <= 1000
-	if !valid {
+	if serverElapsed < minChallengeMs || serverElapsed > 120000 {
 		s.challenge.failAttempt(id)
-		return nil, respond.NewError("HUMAN_CHALLENGE_INCOMPLETE", "请重新平稳滑动到最右侧", 422)
+		return nil, respond.NewError("HUMAN_CHALLENGE_INCOMPLETE", "验证已过期，请重新获取验证码", 422)
+	}
+	answer = strings.ToUpper(strings.TrimSpace(answer))
+	if !hmac.Equal([]byte(answer), []byte(rec.Answer)) {
+		s.challenge.failAttempt(id)
+		return nil, respond.NewError("HUMAN_CHALLENGE_INCOMPLETE", "验证码不正确，请重试", 422)
 	}
 	if !s.challenge.markVerified(id) {
 		return nil, respond.NewError("HUMAN_CHALLENGE_EXPIRED", "验证已过期，请重试", 422)

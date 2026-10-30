@@ -153,7 +153,7 @@ func TestReenableAccountSchedulesNextRun(t *testing.T) {
 	}
 }
 
-func TestCancelOnlyAppliesToPendingTasks(t *testing.T) {
+func TestCancelAppliesToRunningAndPendingTasks(t *testing.T) {
 	store := newTestStore(t)
 	userID := insertTestUser(t, store)
 	accountID := insertTestAccount(t, store, userID)
@@ -163,11 +163,11 @@ func TestCancelOnlyAppliesToPendingTasks(t *testing.T) {
 	if _, err := store.Write.Exec(`UPDATE TF_sign_tasks SET status='running' WHERE id=?`, taskID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.Cancel(userID, "task-cancel"); err == nil {
-		t.Fatal("running 状态的任务不应允许取消")
+	if _, err := svc.Cancel(userID, "task-cancel"); err != nil {
+		t.Fatalf("running 任务应允许取消: %v", err)
 	}
 
-	if _, err := store.Write.Exec(`UPDATE TF_sign_tasks SET status='pending' WHERE id=?`, taskID); err != nil {
+	if _, err := store.Write.Exec(`UPDATE TF_sign_tasks SET status='pending', finished_at=NULL WHERE id=?`, taskID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.Cancel(userID, "task-cancel"); err != nil {

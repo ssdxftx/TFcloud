@@ -24,6 +24,7 @@ export default function ProfilePage () {
   const [push, setPush] = useState({ push_channel: 'none', push_token: '' });
   const [passwords, setPasswords] = useState({ verification_code: '', new_password: '', confirm_password: '' });
   const [currentEmailCode, setCurrentEmailCode] = useState('');
+  const [currentPassword, setCurrentPassword] = useState('');
   const [saving, setSaving] = useState(false);
   const [savingPush, setSavingPush] = useState(false);
   const [testingPush, setTestingPush] = useState(false);
@@ -39,15 +40,18 @@ export default function ProfilePage () {
   const site = useSite();
   const navigate = useNavigate();
 
-  const emailChanged = Boolean(user?.email)
-    && profile.email.trim().toLowerCase() !== (user?.email || '').trim().toLowerCase();
-  const emailCodeRequired = Boolean(site.mail_enabled) && emailChanged;
+  const currentEmail = (user?.email || '').trim().toLowerCase();
+  const nextEmail = profile.email.trim().toLowerCase();
+  const emailChanged = nextEmail !== currentEmail;
+  const emailCodeRequired = Boolean(site.mail_enabled) && currentEmail !== '' && emailChanged;
+  const emailPasswordRequired = emailChanged && !emailCodeRequired;
 
   useEffect(() => {
     if (!user) return;
     setProfile({ email: user.email || '', qq: user.qq || '', daily_sign_email: Boolean(user.daily_sign_email) });
     setPush({ push_channel: user.push_channel || 'none', push_token: user.push_token || '' });
     setCurrentEmailCode('');
+    setCurrentPassword('');
     setEmailCodeTarget('');
   }, [user]);
 
@@ -106,6 +110,10 @@ export default function ProfilePage () {
       toast.error('更换邮箱前，请输入原邮箱收到的6位验证码');
       return;
     }
+    if (emailPasswordRequired && !currentPassword) {
+      toast.error('修改或绑定邮箱前，请输入当前登录密码');
+      return;
+    }
     setSaving(true);
     try {
       await apiRequest<User>({
@@ -114,10 +122,12 @@ export default function ProfilePage () {
         data: {
           ...profile,
           ...(emailCodeRequired ? { current_email_code: currentEmailCode.trim() } : {}),
+          ...(emailPasswordRequired ? { current_password: currentPassword } : {}),
         },
       });
       await refreshUser();
       setCurrentEmailCode('');
+      setCurrentPassword('');
       setEmailCodeTarget('');
       toast.success('联系方式已更新');
     } catch (error) {
@@ -342,9 +352,19 @@ export default function ProfilePage () {
                   setCurrentEmailCode('');
                 }}
               />
-              {emailChanged && !site.mail_enabled && (
+              {emailPasswordRequired && (
                 <div className='rounded-2xl border border-divider bg-content1/50 p-4 text-xs leading-5 text-default-500'>
-                  邮件服务未启用，修改邮箱无需原邮箱验证码。
+                  {currentEmail
+                    ? '邮件服务未启用，请使用当前登录密码确认身份。'
+                    : '首次绑定邮箱需要当前登录密码确认身份；尚未设置密码的账号请联系管理员。'}
+                  <Input
+                    className='mt-3'
+                    label='当前登录密码'
+                    type='password'
+                    autoComplete='current-password'
+                    value={currentPassword}
+                    onValueChange={setCurrentPassword}
+                  />
                 </div>
               )}
               {emailCodeRequired && (
@@ -382,7 +402,7 @@ export default function ProfilePage () {
                 <div><p className='text-sm font-medium'>每日签到邮件</p><p className='mt-1 text-xs leading-5 text-default-400'>每天汇总当天任务完成、失败和等待状态，默认关闭</p></div>
                 <Switch aria-label='每日签到邮件' isSelected={profile.daily_sign_email} onValueChange={(value) => setProfile((current) => ({ ...current, daily_sign_email: value }))} />
               </div>
-              <Button type='submit' color='primary' isLoading={saving} isDisabled={emailCodeRequired && currentEmailCode.length !== 6}>保存联系方式</Button>
+              <Button type='submit' color='primary' isLoading={saving} isDisabled={(emailCodeRequired && currentEmailCode.length !== 6) || (emailPasswordRequired && !currentPassword)}>保存联系方式</Button>
             </form>
           </CardBody>
         </Card>

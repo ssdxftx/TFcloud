@@ -153,6 +153,14 @@ func runServe() {
 		Platform: a.platform, Audit: a.audit,
 		Registry: a.registry, Logger: a.logger,
 	}
+	if !a.cfg.IsInstalled() {
+		if token, err := a.install.Token(); err != nil {
+			a.logger.Error("install token unavailable", slog.String("error", err.Error()))
+		} else {
+			a.logger.Warn("site is not installed; use this one-time token in the installer",
+				slog.String("install_token", token))
+		}
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

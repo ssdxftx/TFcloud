@@ -97,6 +97,7 @@ export default function InstallPage () {
   const [adminPassword, setAdminPassword] = useState('');
   const [adminPasswordConfirm, setAdminPasswordConfirm] = useState('');
   const [adminDisplayName, setAdminDisplayName] = useState('系统管理员');
+  const [installToken, setInstallToken] = useState('');
 
   const stepIndex = useMemo(() => steps.findIndex((item) => item.key === step), [step]);
   const remaining = Math.max(0, steps.length - 1 - stepIndex);
@@ -162,6 +163,10 @@ export default function InstallPage () {
   };
 
   const runInstall = async () => {
+    if (!installToken.trim()) {
+      toast.error('请填写容器日志或 data/install.token 中的安装令牌');
+      return;
+    }
     if (adminPassword !== adminPasswordConfirm) {
       toast.error('两次输入的管理员密码不一致');
       return;
@@ -174,6 +179,7 @@ export default function InstallPage () {
         data: {
           site_url: siteUrl.trim(),
           session_secure: sessionSecure,
+          install_token: installToken.trim(),
           admin: {
             username: adminUsername.trim(),
             password: adminPassword,
@@ -480,6 +486,14 @@ export default function InstallPage () {
                       <Checkbox isSelected={sessionSecure} onValueChange={setSessionSecure}>
                         启用安全 Cookie（HTTPS 环境请保持开启）
                       </Checkbox>
+                      <Input
+                        classNames={inputClassNames}
+                        label='安装令牌'
+                        description='首次安装必填；见容器启动日志或 data/install.token'
+                        startContent={<LuKeyRound className='text-default-400' />}
+                        value={installToken}
+                        onValueChange={setInstallToken}
+                      />
                       <div className='grid gap-3 md:grid-cols-2'>
                         <Input
                           classNames={inputClassNames}

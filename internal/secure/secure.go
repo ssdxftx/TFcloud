@@ -122,13 +122,22 @@ const (
 	argonKeyLen  = 32
 )
 
+// hashSlots 限制并发 Argon2 计算，避免少量登录请求就占满 512MB 级实例。
+var hashSlots = make(chan struct{}, 2)
+
+func runArgon(password string, salt []byte, timeCost, memory uint32, threads uint8, keyLen uint32) []byte {
+	hashSlots <- struct{}{}
+	defer func() { <-hashSlots }()
+	return argon2.IDKey([]byte(password), salt, timeCost, memory, threads, keyLen)
+}
+
 // HashPassword 使用 argon2id，输出 PHC 字符串。
 func HashPassword(password string) (string, error) {
 	salt := make([]byte, 16)
 	if _, err := rand.Read(salt); err != nil {
 		return "", err
 	}
-	key := argon2.IDKey([]byte(password), salt, argonTime, argonMemory, argonThreads, argonKeyLen)
+	key := runArgon(password, salt, argonTime, argonMemory, argonThreads, argonKeyLen)
 	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
 		argon2.Version, argonMemory, argonTime, argonThreads,
 		base64.RawStdEncoding.EncodeToString(salt),
@@ -176,6 +185,9 @@ func verifyArgon2id(encoded, password string) bool {
 			threads = uint8(n)
 		}
 	}
+	if memory < 8*1024 || memory > 256*1024 || timeCost == 0 || timeCost > 10 || threads == 0 || threads > 16 {
+		return false
+	}
 	salt, err := base64.RawStdEncoding.DecodeString(parts[4])
 	if err != nil {
 		return false
@@ -184,7 +196,7 @@ func verifyArgon2id(encoded, password string) bool {
 	if err != nil {
 		return false
 	}
-	got := argon2.IDKey([]byte(password), salt, timeCost, memory, threads, uint32(len(want)))
+	got := runArgon(password, salt, timeCost, memory, threads, uint32(len(want)))
 	return subtle.ConstantTimeCompare(got, want) == 1
 }
 

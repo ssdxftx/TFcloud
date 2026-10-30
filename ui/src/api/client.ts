@@ -2,7 +2,6 @@ import axios, { type AxiosRequestConfig } from 'axios';
 
 import type { ApiEnvelope } from '@/types/sign';
 
-export const AUTH_TOKEN_KEY = 'tf-sign-access-token';
 export const AUTH_EXPIRED_EVENT = 'tf-sign-auth-expired';
 export const GLOBAL_LOADING_EVENT = 'tf-global-loading';
 
@@ -57,12 +56,35 @@ function redirectToInstaller (code?: string) {
   }
 }
 
+function readCookie (name: string) {
+  const prefix = `${name}=`;
+  for (const part of document.cookie.split(';')) {
+    const value = part.trim();
+    if (value.startsWith(prefix)) return decodeURIComponent(value.slice(prefix.length));
+  }
+  return '';
+}
+
 client.interceptors.request.use((config) => {
   beginRequest(config);
-  const token = localStorage.getItem(AUTH_TOKEN_KEY);
-  if (token) config.headers.Authorization = `Bearer ${token}`;
+  const method = String(config.method || 'get').toLowerCase();
+  if (!['get', 'head', 'options'].includes(method)) {
+    const csrf = readCookie('tf_csrf');
+    if (csrf) config.headers['X-CSRF-Token'] = csrf;
+  }
   return config;
 });
+
+// 清理旧版本遗留的 JS 可读 token；新会话只依赖 HttpOnly Cookie。
+try {
+  localStorage.removeItem('tf-sign-access-token');
+} catch {
+  // localStorage 不可用时忽略。
+}
+
+function isPublicAuthRequest (url?: string) {
+  return Boolean(url && (url.startsWith('/auth/login') || url.startsWith('/auth/register') || url.startsWith('/auth/qq/') || url.startsWith('/auth/password/')));
+}
 
 client.interceptors.response.use(
   (response) => {
@@ -74,8 +96,7 @@ client.interceptors.response.use(
     const status = Number(error.response?.status || 0);
     const envelope = error.response?.data as Partial<ApiEnvelope<unknown>> | undefined;
     redirectToInstaller(envelope?.code);
-    if (status === 401 && localStorage.getItem(AUTH_TOKEN_KEY)) {
-      localStorage.removeItem(AUTH_TOKEN_KEY);
+    if (status === 401 && !isPublicAuthRequest(error.config?.url)) {
       window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
     }
     return Promise.reject(new ApiError(

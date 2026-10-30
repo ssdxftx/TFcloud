@@ -393,6 +393,15 @@ func (c *tiebaClient) signAll(ctx context.Context, cache map[string]any, targetI
 	}
 
 	var details []tiebaDetail
+	if targetIDs != nil && len(signForums) == 0 {
+		for _, id := range targetIDs {
+			details = append(details, tiebaDetail{fid: id, record: sign.Record{
+				Key: "forum:" + id, Action: "forum_sign", Status: "failed",
+				TargetType: "forum", TargetID: id, TargetName: id,
+				Code: "TIEBA_RETRY_TARGET_MISSING", Message: "目标贴吧不在当前关注列表缓存中，请完整重跑",
+			}})
+		}
+	}
 	for _, forum := range signForums {
 		d := c.signForum(ctx, forum, tbs)
 		details = append(details, d)

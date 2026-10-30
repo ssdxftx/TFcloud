@@ -44,9 +44,12 @@ type Config struct {
 	BilibiliLiveEnabled   bool
 	BilibiliLiveWorkers   int
 	MaintenanceEnabled    bool
+	RetentionDays         int
+	AuditRetentionDays    int
 	UpdateVersionURL      string
 	UpdatePageURL         string
 	UpdateGithubToken     string
+	InstallToken          string
 
 	// 运行时填充（安装向导写入后热更新）
 	Installed bool
@@ -85,9 +88,12 @@ func Load() (*Config, error) {
 		BilibiliLiveEnabled:   envBool("BILIBILI_LIVE_WORKER_ENABLED", true),
 		BilibiliLiveWorkers:   envInt("BILIBILI_LIVE_WORKER_COUNT", 2),
 		MaintenanceEnabled:    envBool("MAINTENANCE_ENABLED", true),
+		RetentionDays:         envInt("TF_RETENTION_DAYS", 0),
+		AuditRetentionDays:    envInt("TF_AUDIT_RETENTION_DAYS", 365),
 		UpdateVersionURL:      env("UPDATE_VERSION_URL", "https://raw.githubusercontent.com/longfie/TFcloud/main/backend/VERSION"),
 		UpdatePageURL:         env("UPDATE_PAGE_URL", "https://github.com/longfie/TFcloud/releases"),
 		UpdateGithubToken:     env("UPDATE_GITHUB_TOKEN", ""),
+		InstallToken:          firstEnv("TF_INSTALL_TOKEN", "INSTALL_TOKEN"),
 	}
 
 	if err := os.MkdirAll(c.DataDir, 0o750); err != nil {
@@ -211,6 +217,15 @@ func envFileCandidates() []string {
 		out = append(out, filepath.Join(filepath.Dir(d), ".env"))
 	}
 	return out
+}
+
+func firstEnv(keys ...string) string {
+	for _, key := range keys {
+		if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func env(key, fallback string) string {

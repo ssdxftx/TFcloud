@@ -142,6 +142,12 @@ func (p *Pool) maintain() {
 	_, _ = p.store.Write.ExecContext(ctx, `DELETE FROM TF_platform_auth_flows WHERE expires_at < ?`,
 		database.Now())
 	_, _ = p.store.Write.ExecContext(ctx, `DELETE FROM TF_sign_record_payloads WHERE expires_at < ?`, database.Now())
+	_, _ = p.store.Write.ExecContext(ctx, `DELETE FROM TF_challenges WHERE expires_at < ? OR verified_at < ?`,
+		database.Now(), database.Ts(time.Now().Add(-time.Hour)))
+	_, _ = p.store.Write.ExecContext(ctx, `DELETE FROM TF_login_failures WHERE updated_at < ?`,
+		database.Ts(time.Now().Add(-24*time.Hour)))
+	_, _ = p.store.Write.ExecContext(ctx, `DELETE FROM TF_rate_limits WHERE reset_at < ?`,
+		database.Ts(time.Now().Add(-24*time.Hour)))
 	if _, err := p.store.Write.ExecContext(ctx, `UPDATE TF_bilibili_live_sessions SET status='expired',
 		finished_at=?, updated_at=? WHERE status IN ('discovering','running') AND expires_at < ?`,
 		database.Now(), database.Now(), database.Now()); err != nil {
@@ -150,9 +156,37 @@ func (p *Pool) maintain() {
 	if n := p.tasks.RecoverStale(int(p.cfg.TaskLockTimeout.Seconds()), 100); n > 0 {
 		p.logger.Warn("recovered stale tasks", slog.Int("count", n))
 	}
+	p.cleanupRetention()
 	p.mail.RecoverStaleSending(5*time.Minute, 100)
 	if err := p.store.Checkpoint(ctx); err != nil {
 		p.logger.Warn("wal checkpoint failed", slog.String("error", err.Error()))
+	}
+}
+
+func (p *Pool) cleanupRetention() {
+	if p.cfg.RetentionDays > 0 {
+		cutoff := database.Ts(time.Now().AddDate(0, 0, -p.cfg.RetentionDays))
+		tx, err := p.store.Write.Beginx()
+		if err != nil {
+			p.logger.Warn("retention transaction failed", slog.String("error", err.Error()))
+		} else {
+			defer func() { _ = tx.Rollback() }()
+			_, _ = tx.Exec(`DELETE FROM TF_sign_tasks WHERE created_at < ? AND status IN ('succeeded','partial','failed','cancelled')`, cutoff)
+			_, _ = tx.Exec(`DELETE FROM TF_plugin_accounts WHERE deleted_at IS NOT NULL AND deleted_at < ?`, cutoff)
+			_, _ = tx.Exec(`DELETE FROM TF_mail_records WHERE created_at < ? AND status IN ('sent','failed')`, cutoff)
+			_, _ = tx.Exec(`DELETE FROM TF_mail_tasks WHERE created_at < ? AND NOT EXISTS
+				(SELECT 1 FROM TF_mail_records r WHERE r.task_id = TF_mail_tasks.id)`, cutoff)
+			_, _ = tx.Exec(`DELETE FROM TF_notification_events WHERE created_at < ?`, cutoff)
+			if err := tx.Commit(); err != nil {
+				p.logger.Warn("retention commit failed", slog.String("error", err.Error()))
+			}
+		}
+	}
+	if p.cfg.AuditRetentionDays > 0 {
+		cutoff := database.Ts(time.Now().AddDate(0, 0, -p.cfg.AuditRetentionDays))
+		if _, err := p.store.Write.Exec(`DELETE FROM TF_audit_logs WHERE created_at < ?`, cutoff); err != nil {
+			p.logger.Warn("audit retention failed", slog.String("error", err.Error()))
+		}
 	}
 }
 

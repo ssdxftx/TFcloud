@@ -32,17 +32,6 @@ func unmarshalMap(v *string) map[string]any {
 	return out
 }
 
-func unmarshalAny(v *string) any {
-	if v == nil || *v == "" {
-		return nil
-	}
-	var out any
-	if err := json.Unmarshal([]byte(*v), &out); err != nil {
-		return nil
-	}
-	return out
-}
-
 func jsonOrNil(v any) any {
 	if v == nil {
 		return nil
@@ -108,6 +97,16 @@ func isCredentialFailureCode(code string) bool {
 	switch code {
 	case "PLUGIN_CREDENTIAL_EXPIRED", "PLUGIN_CREDENTIAL_INVALID", "PLUGIN_CREDENTIAL_MISSING",
 		"CREDENTIAL_DECRYPT_FAILED", "CREDENTIAL_FORMAT_INVALID", "APP_KEY_MISSING":
+		return true
+	default:
+		return false
+	}
+}
+
+func isPermanentFailureCode(code string) bool {
+	switch code {
+	case "PLUGIN_ACCOUNT_DISABLED", "PLUGIN_ACCOUNT_NOT_FOUND", "PLUGIN_ACTION_UNSUPPORTED",
+		"PLUGIN_ACTION_NOT_SUPPORTED", "PLUGIN_NOT_FOUND", "VALIDATION_FAILED", "USER_DISABLED":
 		return true
 	default:
 		return false
